@@ -1,0 +1,14 @@
+build/
+out/
+*.exe
+*.pdb
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeUserPresets.json
+
+# Bundled binaries are not vendored — drop ffmpeg.exe into binaries/
+# locally; CMake POST_BUILD copies it next to the lathe executable.
+binaries/
+test_data/
