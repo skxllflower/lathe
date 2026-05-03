@@ -1,8 +1,11 @@
 #include "convert.h"
 
+#include "bootstrap.h"
 #include "process.h"
 #include "progress.h"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <regex>
 #include <string>
@@ -18,8 +21,6 @@ namespace lathe {
 namespace fs = std::filesystem;
 
 #ifdef _WIN32
-// Build a fs::path from UTF-8 in a way that survives non-ANSI characters
-// on Windows (default narrow std::string ctor uses the system codepage).
 static fs::path path_from_utf8(const std::string& utf8) {
   return fs::path(utf8_to_utf16(utf8));
 }
@@ -33,6 +34,18 @@ static std::string path_to_utf8(const fs::path& p) { return p.string(); }
 
 static std::string ffmpeg_path() {
   return path_to_utf8(path_from_utf8(exe_dir()) / "ffmpeg.exe");
+}
+
+static std::string lower(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(),
+    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return s;
+}
+
+static std::string ext_of(const std::string& path) {
+  auto dot = path.find_last_of('.');
+  if (dot == std::string::npos) return std::string();
+  return lower(path.substr(dot + 1));
 }
 
 static double probe_duration_seconds(const std::string& input) {
@@ -51,7 +64,77 @@ static double probe_duration_seconds(const std::string& input) {
   return duration;
 }
 
-ConvertResult convert(const std::string& input, const std::string& output) {
+// Build the format-specific ffmpeg flags from the option struct. Choices
+// that don't apply to the chosen output container are silently dropped
+// (e.g. --bitrate on a .wav target).
+static void apply_options(std::vector<std::string>& args,
+                          const std::string& out_ext,
+                          const ConvertOptions& o) {
+  if (!o.sample_rate.empty()) {
+    args.push_back("-ar");
+    args.push_back(o.sample_rate);
+  }
+
+  if (out_ext == "wav") {
+    std::string codec;
+    if      (o.bit_depth == "16")              codec = "pcm_s16le";
+    else if (o.bit_depth == "24")              codec = "pcm_s24le";
+    else if (o.bit_depth == "32")              codec = "pcm_s32le";
+    else if (o.bit_depth == "f32" ||
+             o.bit_depth == "float")           codec = "pcm_f32le";
+    if (!codec.empty()) {
+      args.push_back("-c:a");
+      args.push_back(codec);
+    }
+  } else if (out_ext == "aiff" || out_ext == "aif") {
+    std::string codec;
+    if      (o.bit_depth == "16")              codec = "pcm_s16be";
+    else if (o.bit_depth == "24")              codec = "pcm_s24be";
+    else if (o.bit_depth == "32")              codec = "pcm_s32be";
+    if (!codec.empty()) {
+      args.push_back("-c:a");
+      args.push_back(codec);
+    }
+  } else if (out_ext == "flac") {
+    // FLAC uses sample_fmt; 24-bit FLAC is stored in s32 container.
+    if (o.bit_depth == "16") {
+      args.push_back("-sample_fmt"); args.push_back("s16");
+    } else if (o.bit_depth == "24" || o.bit_depth == "32") {
+      args.push_back("-sample_fmt"); args.push_back("s32");
+    }
+    if (!o.compression_level.empty()) {
+      args.push_back("-compression_level");
+      args.push_back(o.compression_level);
+    }
+  } else if (out_ext == "mp3") {
+    // VBR (-q:a) takes precedence over CBR (-b:a) when both supplied.
+    if (!o.vbr_quality.empty()) {
+      args.push_back("-q:a");
+      args.push_back(o.vbr_quality);
+    } else if (!o.bitrate.empty()) {
+      args.push_back("-b:a");
+      args.push_back(o.bitrate);
+    }
+  } else if (out_ext == "ogg" || out_ext == "opus" ||
+             out_ext == "aac" || out_ext == "m4a") {
+    if (!o.bitrate.empty()) {
+      args.push_back("-b:a");
+      args.push_back(o.bitrate);
+    }
+  }
+}
+
+ConvertResult convert(const std::string& input,
+                      const std::string& output,
+                      const ConvertOptions& opts) {
+  // Make sure ffmpeg.exe is on disk before we try to spawn it. On a
+  // fresh checkout the binaries/ folder is empty (gitignored) and this
+  // call downloads into exe_dir().
+  if (!ensure_required()) {
+    progress_error("required binary (ffmpeg) not available; bootstrap failed");
+    return ConvertResult::BootstrapFailed;
+  }
+
   fs::path in_path  = path_from_utf8(input);
   fs::path out_path = path_from_utf8(output);
 
@@ -75,8 +158,9 @@ ConvertResult convert(const std::string& input, const std::string& output) {
     "-progress", "pipe:1",
     "-loglevel", "error",
     "-stats_period", "0.25",
-    output,
   };
+  apply_options(argv, ext_of(output), opts);
+  argv.push_back(output);
 
   std::string last_error_line;
   double batch_time_s = -1.0;
@@ -109,7 +193,7 @@ ConvertResult convert(const std::string& input, const std::string& output) {
   });
 
   if (was_cancelled()) {
-    fs::remove(out_path, ec);  // tear down partial output
+    fs::remove(out_path, ec);
     progress_cancelled();
     return ConvertResult::Cancelled;
   }

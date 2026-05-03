@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(lathe
   src/main.cpp
+  src/bootstrap.cpp
   src/convert.cpp
   src/process.cpp
   src/progress.cpp

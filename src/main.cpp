@@ -1,3 +1,4 @@
+#include "bootstrap.h"
 #include "convert.h"
 #include "process.h"
 
@@ -17,27 +18,40 @@ namespace {
 
 int print_help() {
   std::puts(
-    "lathe " "0.1.0" " - any-to-any media converter (ffmpeg wrapper)\n"
+    "lathe " "0.2.0" " - any-to-any media converter (ffmpeg wrapper)\n"
     "\n"
     "Usage:\n"
-    "  lathe convert <input> <output>\n"
+    "  lathe convert <input> <output> [options]\n"
+    "  lathe bootstrap\n"
     "  lathe --version\n"
     "  lathe --help\n"
     "\n"
-    "Output container/codec is auto-detected from the output file extension.\n"
-    "Paths are UTF-8 (Windows) — non-ASCII filenames are preserved.\n"
+    "Convert options (verbose; all optional):\n"
+    "  --sample-rate=<hz>          44100 / 48000 / 96000 / 192000\n"
+    "  --bit-depth=<n>             16 / 24 / 32 / f32 (PCM-style outputs)\n"
+    "  --bitrate=<rate>            192k / 256k / 320k (lossy outputs)\n"
+    "  --vbr-quality=<n>           MP3 LAME -q:a 0..9 (0 = best VBR)\n"
+    "  --compression-level=<n>     FLAC compression 0..12 (5 = default)\n"
     "\n"
-    "Progress is emitted as newline-delimited JSON on stdout, one event per line:\n"
-    "  {\"type\":\"start\",    \"input\":..., \"output\":..., \"duration_s\":...}\n"
-    "  {\"type\":\"progress\", \"percent\":..., \"time_s\":..., \"speed\":...}\n"
-    "  {\"type\":\"done\",     \"output\":...}\n"
-    "  {\"type\":\"cancelled\"}\n"
-    "  {\"type\":\"error\",    \"message\":...}\n"
+    "On Windows, paths and filenames are UTF-8 (non-ASCII characters\n"
+    "are preserved end-to-end). If ffmpeg.exe is missing from the\n"
+    "executable's directory, lathe will download it on first run.\n"
+    "Run `lathe bootstrap` to pre-fetch without doing a conversion.\n"
     "\n"
-    "Cancellation: terminate the process (Ctrl+C, or TerminateProcess from a\n"
-    "parent). The wrapped ffmpeg child dies with us via Windows Job Object.\n"
+    "Progress is emitted as newline-delimited JSON on stdout, one event\n"
+    "per line: bootstrap / start / progress / done / cancelled / error.\n"
   );
   return 0;
+}
+
+// Tiny --key=value parser. Supports --key=value and bare flags. Unknown
+// flags terminate parsing with an error to surface typos early.
+bool parse_kv(const std::string& a, const std::string& key, std::string* out) {
+  if (a.rfind("--" + key + "=", 0) == 0) {
+    *out = a.substr(2 + key.size() + 1);
+    return true;
+  }
+  return false;
 }
 
 int run_cli(const std::vector<std::string>& args) {
@@ -47,8 +61,12 @@ int run_cli(const std::vector<std::string>& args) {
 
   if (cmd == "--help" || cmd == "-h") return print_help();
   if (cmd == "--version" || cmd == "-v") {
-    std::puts("lathe 0.1.0");
+    std::puts("lathe 0.2.0");
     return 0;
+  }
+
+  if (cmd == "bootstrap") {
+    return lathe::ensure_required() ? 0 : 1;
   }
 
   if (cmd == "convert") {
@@ -56,12 +74,24 @@ int run_cli(const std::vector<std::string>& args) {
       std::fputs("error: convert requires <input> <output>\n", stderr);
       return 2;
     }
-    auto r = lathe::convert(args[2], args[3]);
+    lathe::ConvertOptions opts;
+    for (size_t i = 4; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      if      (parse_kv(a, "sample-rate",       &opts.sample_rate))       continue;
+      else if (parse_kv(a, "bit-depth",         &opts.bit_depth))         continue;
+      else if (parse_kv(a, "bitrate",           &opts.bitrate))           continue;
+      else if (parse_kv(a, "vbr-quality",       &opts.vbr_quality))       continue;
+      else if (parse_kv(a, "compression-level", &opts.compression_level)) continue;
+      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+      return 2;
+    }
+    auto r = lathe::convert(args[2], args[3], opts);
     switch (r) {
-      case lathe::ConvertResult::Ok:            return 0;
-      case lathe::ConvertResult::Cancelled:     return 130;
-      case lathe::ConvertResult::InputNotFound: return 1;
-      case lathe::ConvertResult::FfmpegFailed:  return 1;
+      case lathe::ConvertResult::Ok:               return 0;
+      case lathe::ConvertResult::Cancelled:        return 130;
+      case lathe::ConvertResult::InputNotFound:    return 1;
+      case lathe::ConvertResult::FfmpegFailed:     return 1;
+      case lathe::ConvertResult::BootstrapFailed:  return 1;
     }
     return 1;
   }
@@ -74,8 +104,6 @@ int run_cli(const std::vector<std::string>& args) {
 
 int main(int /*argc*/, char** /*argv*/) {
 #ifdef _WIN32
-  // Pull wide argv directly so non-ASCII paths survive — bypasses the
-  // narrow main(argc, argv) which is in the system ANSI codepage.
   int wargc = 0;
   LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
   if (!wargv) return 1;
@@ -86,13 +114,9 @@ int main(int /*argc*/, char** /*argv*/) {
   }
   LocalFree(wargv);
 
-  // Make stdout unbuffered enough for line-by-line streaming.
-  // (progress.cpp also calls fflush after each line.)
   SetConsoleOutputCP(CP_UTF8);
   return run_cli(args);
 #else
-  // POSIX: argv is already the user's encoding; on modern systems UTF-8.
-  // (Stub — Lathe is Windows-first today.)
   std::vector<std::string> args;
   args.reserve(static_cast<size_t>(argc));
   for (int i = 0; i < argc; ++i) args.emplace_back(argv[i]);
