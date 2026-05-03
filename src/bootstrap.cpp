@@ -1,8 +1,10 @@
 #include "bootstrap.h"
 
+#include "download.h"
 #include "process.h"
 #include "progress.h"
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -31,78 +33,58 @@ fs::path path_from_utf8(const std::string& utf8) { return fs::path(utf8); }
 std::string path_to_utf8(const fs::path& p) { return p.string(); }
 #endif
 
-void emit_bootstrap(const std::string& stage,
-                    const std::string& binary,
-                    const std::string& message = std::string()) {
-  // We don't pull in a JSON lib for this one event type — escaping is
-  // trivial since stage / binary are constant strings and message is
-  // already plaintext from stderr or our own tooling.
+std::string esc(const std::string& s) {
   std::string m;
-  for (char c : message) {
+  m.reserve(s.size() + 4);
+  for (char c : s) {
     if      (c == '"')  m += "\\\"";
     else if (c == '\\') m += "\\\\";
     else if (c == '\n' || c == '\r' || c == '\t') m += ' ';
     else                m += c;
   }
-  std::printf(
-    "{\"type\":\"bootstrap\",\"stage\":\"%s\",\"binary\":\"%s\"%s%s%s}\n",
-    stage.c_str(),
-    binary.c_str(),
-    message.empty() ? "" : ",\"message\":\"",
-    message.empty() ? "" : m.c_str(),
-    message.empty() ? "" : "\"");
+  return m;
+}
+
+// One bootstrap NDJSON event — supports an optional progress payload
+// (bytes / total / percent) so the UI can render a live download bar
+// instead of just a "Downloading…" spinner.
+void emit_bootstrap(const std::string& stage,
+                    const std::string& binary,
+                    uint64_t bytes = 0,
+                    uint64_t total = 0,
+                    const std::string& message = std::string()) {
+  std::string out = "{\"type\":\"bootstrap\",\"stage\":\"";
+  out += stage;
+  out += "\",\"binary\":\"";
+  out += binary;
+  out += "\"";
+  if (bytes > 0 || total > 0) {
+    char buf[128];
+    std::snprintf(buf, sizeof(buf),
+      ",\"bytes\":%llu,\"total\":%llu",
+      static_cast<unsigned long long>(bytes),
+      static_cast<unsigned long long>(total));
+    out += buf;
+    if (total > 0) {
+      char p[32];
+      std::snprintf(p, sizeof(p),
+        ",\"percent\":%.2f",
+        (double)bytes / (double)total * 100.0);
+      out += p;
+    }
+  }
+  if (!message.empty()) {
+    out += ",\"message\":\"";
+    out += esc(message);
+    out += "\"";
+  }
+  out += "}\n";
+  std::fputs(out.c_str(), stdout);
   std::fflush(stdout);
 }
 
-bool powershell_run(const std::vector<std::string>& ps_argv) {
-  // Re-use our standard Win32 spawn (UTF-8 / Job Object / Ctrl-C aware).
-  std::string captured;
-  int rc = run_subprocess(ps_argv, [&](const std::string& line) {
-    if (!line.empty()) {
-      if (!captured.empty()) captured += "\n";
-      captured += line;
-    }
-  });
-  if (rc != 0 && !captured.empty()) {
-    emit_bootstrap("info", "powershell", captured);
-  }
-  return rc == 0;
-}
-
-bool download_url_to(const std::string& url, const fs::path& dest) {
-  // Quote the URL/path inside the PS one-liner. Single-quoted strings
-  // in PowerShell are literal, so we escape any embedded ' as ''.
-  auto ps_quote = [](const std::string& s) {
-    std::string out = "'";
-    for (char c : s) { if (c == '\'') out += "''"; else out += c; }
-    out += "'";
-    return out;
-  };
-
-  // -UseBasicParsing keeps Invoke-WebRequest from spinning up IE COM
-  // for HTML scraping; for raw downloads it's faster and works on
-  // headless / Server Core. SilentlyContinue suppresses the verbose
-  // PS progress UI which slows large downloads.
-  std::string ps =
-    "$ProgressPreference='SilentlyContinue';"
-    " [Net.ServicePointManager]::SecurityProtocol = "
-    "[Net.SecurityProtocolType]::Tls12;"
-    " try {"
-    "  Invoke-WebRequest -Uri " + ps_quote(url) +
-    " -OutFile " + ps_quote(path_to_utf8(dest)) +
-    " -UseBasicParsing;"
-    "  exit 0"
-    " } catch {"
-    "  Write-Output $_.Exception.Message;"
-    "  exit 1"
-    " }";
-
-  std::vector<std::string> argv = {
-    "powershell", "-NoProfile", "-NonInteractive", "-Command", ps,
-  };
-  return powershell_run(argv) && fs::exists(dest);
-}
-
+// PowerShell zip extraction. ffmpeg's archive ships a single
+// <root>/bin/ffmpeg.exe; we walk for it after extracting.
 bool extract_zip(const fs::path& zip, const fs::path& dest) {
   auto ps_quote = [](const std::string& s) {
     std::string out = "'";
@@ -117,11 +99,19 @@ bool extract_zip(const fs::path& zip, const fs::path& dest) {
   std::vector<std::string> argv = {
     "powershell", "-NoProfile", "-NonInteractive", "-Command", ps,
   };
-  return powershell_run(argv);
+  std::string err;
+  int rc = run_subprocess(argv, [&](const std::string& line) {
+    if (!line.empty()) {
+      if (!err.empty()) err += "\n";
+      err += line;
+    }
+  });
+  if (rc != 0 && !err.empty()) {
+    emit_bootstrap("info", "powershell", 0, 0, err);
+  }
+  return rc == 0;
 }
 
-// Walk the extracted tree for a target filename. Returns first match
-// (BtbN's GPL archive lays out as <root>/bin/ffmpeg.exe).
 fs::path find_recursive(const fs::path& root, const std::string& filename) {
   std::error_code ec;
   if (!fs::exists(root, ec)) return fs::path();
@@ -156,22 +146,26 @@ bool ensure_ffmpeg() {
   fs::remove(zip_path, ec);
   fs::remove_all(extract_d, ec);
 
-  // BtbN's "latest" tag rolls forward continuously and ships a static
-  // GPL-licensed Windows x64 build. The archive layout puts the binary
-  // at <root>/bin/ffmpeg.exe.
+  // BtbN's "latest" tag rolls forward; the GPL static build lays out
+  // <root>/bin/ffmpeg.exe inside the archive.
   const std::string url =
     "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
     "ffmpeg-master-latest-win64-gpl.zip";
 
-  if (!download_url_to(url, zip_path)) {
-    emit_bootstrap("failed", "ffmpeg", "download failed");
+  bool ok = download_with_progress(url, zip_path,
+    [&](uint64_t bytes, uint64_t total) {
+      emit_bootstrap("download", "ffmpeg", bytes, total);
+    });
+
+  if (!ok) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "download failed");
     fs::remove(zip_path, ec);
     return false;
   }
 
   emit_bootstrap("extracting", "ffmpeg");
   if (!extract_zip(zip_path, extract_d)) {
-    emit_bootstrap("failed", "ffmpeg", "archive extraction failed");
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "archive extraction failed");
     fs::remove(zip_path, ec);
     fs::remove_all(extract_d, ec);
     return false;
@@ -179,7 +173,8 @@ bool ensure_ffmpeg() {
 
   fs::path found = find_recursive(extract_d, "ffmpeg.exe");
   if (found.empty()) {
-    emit_bootstrap("failed", "ffmpeg", "ffmpeg.exe not found in extracted archive");
+    emit_bootstrap("failed", "ffmpeg", 0, 0,
+                   "ffmpeg.exe not found in extracted archive");
     fs::remove(zip_path, ec);
     fs::remove_all(extract_d, ec);
     return false;
@@ -187,7 +182,8 @@ bool ensure_ffmpeg() {
 
   fs::copy_file(found, target, fs::copy_options::overwrite_existing, ec);
   if (ec) {
-    emit_bootstrap("failed", "ffmpeg", "could not copy ffmpeg.exe into binaries dir: " + ec.message());
+    emit_bootstrap("failed", "ffmpeg", 0, 0,
+                   "could not copy ffmpeg.exe into binaries dir: " + ec.message());
     fs::remove(zip_path, ec);
     fs::remove_all(extract_d, ec);
     return false;

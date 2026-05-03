@@ -9,6 +9,7 @@ add_executable(lathe
   src/main.cpp
   src/bootstrap.cpp
   src/convert.cpp
+  src/download.cpp
   src/process.cpp
   src/progress.cpp
 )
