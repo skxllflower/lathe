@@ -22,6 +22,8 @@ int print_help() {
     "\n"
     "Usage:\n"
     "  lathe convert <input> <output> [options]\n"
+    "  lathe extract-frame <input> <output>\n"
+    "  lathe extract-audio <input> <output>\n"
     "  lathe bootstrap\n"
     "  lathe --version\n"
     "  lathe --help\n"
@@ -88,6 +90,23 @@ int run_cli(const std::vector<std::string>& args) {
       return 2;
     }
     auto r = lathe::convert(args[2], args[3], opts);
+    switch (r) {
+      case lathe::ConvertResult::Ok:               return 0;
+      case lathe::ConvertResult::Cancelled:        return 130;
+      case lathe::ConvertResult::InputNotFound:    return 1;
+      case lathe::ConvertResult::FfmpegFailed:     return 1;
+      case lathe::ConvertResult::BootstrapFailed:  return 1;
+    }
+    return 1;
+  }
+
+  if (cmd == "extract-frame" || cmd == "extract-audio") {
+    if (args.size() < 4) {
+      std::fputs("error: extract requires <input> <output>\n", stderr);
+      return 2;
+    }
+    bool frame_only = (cmd == "extract-frame");
+    auto r = lathe::extract(args[2], args[3], frame_only);
     switch (r) {
       case lathe::ConvertResult::Ok:               return 0;
       case lathe::ConvertResult::Cancelled:        return 130;

@@ -31,4 +31,12 @@ ConvertResult convert(const std::string& input,
                       const std::string& output,
                       const ConvertOptions& opts);
 
+// Pull a single still frame (frame_only = true) or the audio track
+// (frame_only = false) out of a video into `output`. Same ffmpeg-driven
+// flow as convert() with the same NDJSON progress events; the output
+// container is inferred from the output extension (e.g. .png / .wav).
+ConvertResult extract(const std::string& input,
+                      const std::string& output,
+                      bool frame_only);
+
 }
