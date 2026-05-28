@@ -22,6 +22,9 @@ struct ConvertOptions {
   std::string bitrate;           // e.g. "192k", "320k" (lossy formats)
   std::string vbr_quality;       // MP3 LAME -q:a 0..9 (0 = best VBR)
   std::string compression_level; // FLAC -compression_level 0..12
+  std::string quality;           // image/video quality 0..100 (higher =
+                                 // better). Mapped per output codec:
+                                 // JPEG -q:v, WebP -quality, H.264/VP9 -crf.
 };
 
 ConvertResult convert(const std::string& input,

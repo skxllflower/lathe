@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <regex>
 #include <string>
@@ -64,6 +65,19 @@ static double probe_duration_seconds(const std::string& input) {
   return duration;
 }
 
+// Parse the GUI's 0..100 quality string into a clamped int. Returns false
+// (leaving *out untouched) when empty or non-numeric, so callers can skip
+// the flag entirely and let ffmpeg use the codec default.
+static bool parse_quality(const std::string& s, int* out) {
+  if (s.empty()) return false;
+  try {
+    *out = std::max(0, std::min(100, std::stoi(s)));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 // Build the format-specific ffmpeg flags from the option struct. Choices
 // that don't apply to the chosen output container are silently dropped
 // (e.g. --bitrate on a .wav target).
@@ -120,6 +134,42 @@ static void apply_options(std::vector<std::string>& args,
     if (!o.bitrate.empty()) {
       args.push_back("-b:a");
       args.push_back(o.bitrate);
+    }
+  } else if (out_ext == "jpg" || out_ext == "jpeg") {
+    // JPEG: ffmpeg -q:v runs 2 (best) .. 31 (worst). Invert the GUI's
+    // 0..100 (higher = better) onto that range: 100 -> 2, 0 -> 31.
+    int q;
+    if (parse_quality(o.quality, &q)) {
+      int qv = 31 - static_cast<int>(std::lround((q / 100.0) * 29.0));
+      args.push_back("-q:v");
+      args.push_back(std::to_string(qv));
+    }
+  } else if (out_ext == "webp") {
+    // WebP -quality is already 0..100, higher = better — pass straight through.
+    int q;
+    if (parse_quality(o.quality, &q)) {
+      args.push_back("-quality");
+      args.push_back(std::to_string(q));
+    }
+  } else if (out_ext == "mp4" || out_ext == "mkv" ||
+             out_ext == "mov" || out_ext == "m4v") {
+    // H.264 (libx264 default): -crf 0 (best) .. 51 (worst). Keep the top of
+    // the slider sane on file size — map 100 -> crf 18, 0 -> crf 51.
+    int q;
+    if (parse_quality(o.quality, &q)) {
+      int crf = 51 - static_cast<int>(std::lround((q / 100.0) * 33.0));
+      args.push_back("-crf");
+      args.push_back(std::to_string(crf));
+    }
+  } else if (out_ext == "webm") {
+    // VP9 constant-quality mode needs -b:v 0 alongside -crf.
+    int q;
+    if (parse_quality(o.quality, &q)) {
+      int crf = 51 - static_cast<int>(std::lround((q / 100.0) * 33.0));
+      args.push_back("-crf");
+      args.push_back(std::to_string(crf));
+      args.push_back("-b:v");
+      args.push_back("0");
     }
   }
 }
