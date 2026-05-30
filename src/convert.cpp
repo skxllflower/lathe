@@ -216,7 +216,7 @@ ConvertResult convert(const std::string& input,
   double batch_time_s = -1.0;
   std::string batch_speed;
 
-  run_subprocess(argv, [&](const std::string& line) {
+  int rc = run_subprocess(argv, [&](const std::string& line) {
     auto eq = line.find('=');
     if (eq == std::string::npos) {
       if (!line.empty()) last_error_line = line;
@@ -248,10 +248,16 @@ ConvertResult convert(const std::string& input,
     return ConvertResult::Cancelled;
   }
 
-  if (!fs::exists(out_path, ec)) {
-    progress_error(last_error_line.empty()
-      ? "ffmpeg completed but output file is missing"
-      : last_error_line);
+  // ffmpeg's exit code is authoritative. A non-zero code (disk full, codec
+  // error) means the encode failed even when a partial output file was created
+  // by `-y`; a missing or zero-byte output is a failure too. Remove any partial
+  // so a truncated file never looks like a clean convert to the caller.
+  const bool out_ok = fs::exists(out_path, ec) && fs::file_size(out_path, ec) > 0;
+  if (rc != 0 || !out_ok) {
+    fs::remove(out_path, ec);
+    progress_error(!last_error_line.empty()
+      ? last_error_line
+      : ("ffmpeg failed (exit code " + std::to_string(rc) + ")"));
     return ConvertResult::FfmpegFailed;
   }
 
@@ -305,7 +311,7 @@ ConvertResult extract(const std::string& input,
   double batch_time_s = -1.0;
   std::string batch_speed;
 
-  run_subprocess(argv, [&](const std::string& line) {
+  int rc = run_subprocess(argv, [&](const std::string& line) {
     auto eq = line.find('=');
     if (eq == std::string::npos) {
       if (!line.empty()) last_error_line = line;
@@ -337,10 +343,16 @@ ConvertResult extract(const std::string& input,
     return ConvertResult::Cancelled;
   }
 
-  if (!fs::exists(out_path, ec)) {
-    progress_error(last_error_line.empty()
-      ? "ffmpeg completed but output file is missing"
-      : last_error_line);
+  // ffmpeg's exit code is authoritative. A non-zero code (disk full, codec
+  // error) means the encode failed even when a partial output file was created
+  // by `-y`; a missing or zero-byte output is a failure too. Remove any partial
+  // so a truncated file never looks like a clean convert to the caller.
+  const bool out_ok = fs::exists(out_path, ec) && fs::file_size(out_path, ec) > 0;
+  if (rc != 0 || !out_ok) {
+    fs::remove(out_path, ec);
+    progress_error(!last_error_line.empty()
+      ? last_error_line
+      : ("ffmpeg failed (exit code " + std::to_string(rc) + ")"));
     return ConvertResult::FfmpegFailed;
   }
 
