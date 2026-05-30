@@ -35,6 +35,7 @@ int print_help() {
     "  --vbr-quality=<n>           MP3 LAME -q:a 0..9 (0 = best VBR)\n"
     "  --compression-level=<n>     FLAC compression 0..12 (5 = default)\n"
     "  --quality=<n>               image/video quality 0..100 (higher = better)\n"
+    "  --duration=<sec>            cap output to first <sec> seconds (ffmpeg -t)\n"
     "\n"
     "On Windows, paths and filenames are UTF-8 (non-ASCII characters\n"
     "are preserved end-to-end). If ffmpeg.exe is missing from the\n"
@@ -86,6 +87,7 @@ int run_cli(const std::vector<std::string>& args) {
       else if (parse_kv(a, "vbr-quality",       &opts.vbr_quality))       continue;
       else if (parse_kv(a, "compression-level", &opts.compression_level)) continue;
       else if (parse_kv(a, "quality",           &opts.quality))           continue;
+      else if (parse_kv(a, "duration",          &opts.duration))          continue;
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;
     }

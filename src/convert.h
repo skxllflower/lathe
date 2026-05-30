@@ -25,6 +25,10 @@ struct ConvertOptions {
   std::string quality;           // image/video quality 0..100 (higher =
                                  // better). Mapped per output codec:
                                  // JPEG -q:v, WebP -quality, H.264/VP9 -crf.
+  std::string duration;          // output duration limit in seconds (ffmpeg
+                                 // -t). Empty = full file. Used by WAVdesk's
+                                 // preview transcode to decode only the first
+                                 // few seconds of a long lossy file.
 };
 
 ConvertResult convert(const std::string& input,

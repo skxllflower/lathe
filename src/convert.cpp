@@ -210,6 +210,14 @@ ConvertResult convert(const std::string& input,
     "-stats_period", "0.25",
   };
   apply_options(argv, ext_of(output), opts);
+  // Output duration cap (-t). Placed among the output options so ffmpeg stops
+  // after this many seconds of decoded output — lets a caller decode just the
+  // head of a long file (WAVdesk's preview transcode) instead of the whole
+  // thing. Empty = no cap (full file).
+  if (!opts.duration.empty()) {
+    argv.push_back("-t");
+    argv.push_back(opts.duration);
+  }
   argv.push_back(output);
 
   std::string last_error_line;
