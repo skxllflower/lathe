@@ -1,6 +1,7 @@
 #include "convert.h"
 
 #include "bootstrap.h"
+#include "paths.h"
 #include "process.h"
 #include "progress.h"
 
@@ -34,7 +35,7 @@ static std::string path_to_utf8(const fs::path& p) { return p.string(); }
 #endif
 
 static std::string ffmpeg_path() {
-  return path_to_utf8(path_from_utf8(exe_dir()) / "ffmpeg.exe");
+  return resolved_ffmpeg();
 }
 
 static std::string lower(std::string s) {

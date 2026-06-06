@@ -10,6 +10,7 @@ add_executable(lathe
   src/bootstrap.cpp
   src/convert.cpp
   src/download.cpp
+  src/paths.cpp
   src/process.cpp
   src/progress.cpp
 )
@@ -22,15 +23,6 @@ else()
   target_compile_options(lathe PRIVATE -Wall -Wextra)
 endif()
 
-if (WIN32)
-  set(LATHE_FFMPEG_BIN "${CMAKE_SOURCE_DIR}/binaries/ffmpeg.exe")
-  if (EXISTS "${LATHE_FFMPEG_BIN}")
-    add_custom_command(TARGET lathe POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${LATHE_FFMPEG_BIN}"
-        "$<TARGET_FILE_DIR:lathe>/ffmpeg.exe"
-    )
-  else()
-    message(WARNING "ffmpeg.exe not found at ${LATHE_FFMPEG_BIN}")
-  endif()
-endif()
+# ffmpeg.exe is no longer copied next to the build output — it lives in
+# the Vacant Systems shared bin (see src/paths.cpp) and a next-to-exe copy
+# would permanently win the portable-override tier of the resolution order.

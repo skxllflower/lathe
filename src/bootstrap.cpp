@@ -1,6 +1,7 @@
 #include "bootstrap.h"
 
 #include "download.h"
+#include "paths.h"
 #include "process.h"
 #include "progress.h"
 
@@ -127,9 +128,7 @@ fs::path find_recursive(const fs::path& root, const std::string& filename) {
 }
 
 bool ffmpeg_present() {
-  fs::path target = path_from_utf8(exe_dir()) / "ffmpeg.exe";
-  std::error_code ec;
-  return fs::exists(target, ec);
+  return ffmpeg_exists();
 }
 
 bool ensure_ffmpeg() {
@@ -137,7 +136,11 @@ bool ensure_ffmpeg() {
 
   emit_bootstrap("download", "ffmpeg");
 
-  fs::path bin_dir   = path_from_utf8(exe_dir());
+  // Download into the vendor-shared bin (one ffmpeg for every Vacant
+  // Systems app) — also the only guaranteed-writable home once the
+  // executable lives under Program Files. Staging lives in the same dir
+  // so the final rename is same-volume (atomic).
+  fs::path bin_dir   = path_from_utf8(shared_bin_dir());
   fs::path zip_path  = bin_dir / "_ffmpeg_download.zip";
   fs::path extract_d = bin_dir / "_ffmpeg_extract";
   fs::path target    = bin_dir / "ffmpeg.exe";
@@ -180,10 +183,27 @@ bool ensure_ffmpeg() {
     return false;
   }
 
-  fs::copy_file(found, target, fs::copy_options::overwrite_existing, ec);
-  if (ec) {
+  // Install via tmp + rename so a concurrent reader (or a sibling app's
+  // bootstrap racing us in the shared dir) never sees a partial binary.
+  // A failed rename with the target now present means the racer won.
+  fs::path tmp = target;
+  tmp += ".tmp";
+  fs::copy_file(found, tmp, fs::copy_options::overwrite_existing, ec);
+  std::string install_err = ec ? ec.message() : std::string();
+  if (!ec) {
+    std::error_code rename_ec;
+    fs::rename(tmp, target, rename_ec);
+    if (rename_ec) {
+      // Either the racer won (target exists — fine, checked below) or the
+      // rename genuinely failed; the tmp is junk either way.
+      install_err = rename_ec.message();
+      fs::remove(tmp, ec);
+    }
+  }
+  std::error_code exists_ec;
+  if (!fs::exists(target, exists_ec)) {
     emit_bootstrap("failed", "ffmpeg", 0, 0,
-                   "could not copy ffmpeg.exe into binaries dir: " + ec.message());
+                   "could not install ffmpeg.exe into shared bin: " + install_err);
     fs::remove(zip_path, ec);
     fs::remove_all(extract_d, ec);
     return false;
@@ -191,6 +211,8 @@ bool ensure_ffmpeg() {
 
   fs::remove(zip_path, ec);
   fs::remove_all(extract_d, ec);
+
+  write_binary_manifest(path_to_utf8(target), url, "-version");
 
   emit_bootstrap("done", "ffmpeg");
   return true;

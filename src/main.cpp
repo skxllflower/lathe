@@ -1,5 +1,6 @@
 #include "bootstrap.h"
 #include "convert.h"
+#include "paths.h"
 #include "process.h"
 
 #include <cstdio>
@@ -38,8 +39,10 @@ int print_help() {
     "  --duration=<sec>            cap output to first <sec> seconds (ffmpeg -t)\n"
     "\n"
     "On Windows, paths and filenames are UTF-8 (non-ASCII characters\n"
-    "are preserved end-to-end). If ffmpeg.exe is missing from the\n"
-    "executable's directory, lathe will download it on first run.\n"
+    "are preserved end-to-end). ffmpeg.exe is resolved from the\n"
+    "LATHE_FFMPEG env var, then next to the executable (portable\n"
+    "override), then the Vacant Systems shared bin — and downloaded\n"
+    "into the shared bin on first run when missing.\n"
     "Run `lathe bootstrap` to pre-fetch without doing a conversion.\n"
     "\n"
     "Progress is emitted as newline-delimited JSON on stdout, one event\n"
@@ -60,6 +63,10 @@ bool parse_kv(const std::string& a, const std::string& key, std::string* out) {
 
 int run_cli(const std::vector<std::string>& args) {
   if (args.size() < 2) return print_help();
+
+  // Pre-vendor-folder bootstraps left ffmpeg.exe next to the executable;
+  // adopt it into the shared bin once so it isn't re-downloaded.
+  lathe::migrate_legacy_binaries();
 
   const std::string& cmd = args[1];
 
