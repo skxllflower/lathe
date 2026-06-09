@@ -211,6 +211,23 @@ ConvertResult convert(const std::string& input,
     "-stats_period", "0.25",
   };
   apply_options(argv, ext_of(output), opts);
+  // Preview-grade video knobs (WAVdesk's video preview): downscale to a max
+  // height (keep aspect, even width via -2, never upscale) + a fast encoder
+  // preset, so a huge/4K source transcodes quickly and light instead of pinning
+  // the CPU at native resolution. Video outputs only.
+  {
+    const std::string oext = ext_of(output);
+    const bool video_out = oext == "mp4" || oext == "mkv" || oext == "mov" ||
+                           oext == "m4v" || oext == "webm";
+    if (video_out && !opts.max_height.empty()) {
+      argv.push_back("-vf");
+      argv.push_back("scale=-2:min(" + opts.max_height + "\\,ih)");
+    }
+    if (video_out && !opts.preset.empty()) {
+      argv.push_back("-preset");
+      argv.push_back(opts.preset);
+    }
+  }
   // Output duration cap (-t). Placed among the output options so ffmpeg stops
   // after this many seconds of decoded output — lets a caller decode just the
   // head of a long file (WAVdesk's preview transcode) instead of the whole
