@@ -424,20 +424,27 @@ ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts
   int fps = 24;
   if (!opts.fps.empty()) { try { fps = std::stoi(opts.fps); } catch (...) {} }
   if (fps <= 0) fps = 24;
+  double start = 0.0;
+  if (!opts.start.empty()) { try { start = std::stod(opts.start); } catch (...) {} }
+  if (start < 0.0) start = 0.0;
 
-  std::vector<std::string> argv = {
-    ffmpeg_path(),
-    "-nostdin",
+  // Total duration so the consumer can size its scrubber. A quick `-i` probe
+  // (no decode), same one extract/convert use.
+  const double dur = probe_duration_seconds(input);
+
+  std::vector<std::string> argv = { ffmpeg_path(), "-nostdin",
     "-loglevel", "info",  // so the Output stream line (carrying WxH) hits stderr
-    "-nostats",           // ...without the continuous progress spam
-    "-i", input,
-    "-an",                // video-only for now; audio (live PCM) lands later
-    "-vf", "scale=-2:" + std::to_string(height),
-    "-r", std::to_string(fps),
-    "-f", "rawvideo",
-    "-pix_fmt", "rgba",
-    "pipe:1",
-  };
+    "-nostats" };         // ...without the continuous progress spam
+  // Input seeking (-ss BEFORE -i): fast + accurate enough for preview scrub.
+  // The consumer asks for a start offset to seek by restarting the stream.
+  if (start > 0.0) { argv.push_back("-ss"); argv.push_back(std::to_string(start)); }
+  argv.push_back("-i");        argv.push_back(input);
+  argv.push_back("-an");       // video-only for now; audio (live PCM) lands later
+  argv.push_back("-vf");       argv.push_back("scale=-2:" + std::to_string(height));
+  argv.push_back("-r");        argv.push_back(std::to_string(fps));
+  argv.push_back("-f");        argv.push_back("rawvideo");
+  argv.push_back("-pix_fmt");  argv.push_back("rgba");
+  argv.push_back("pipe:1");
 
   // Pull the negotiated output geometry out of ffmpeg's stderr and announce it
   // once, so the consumer knows the frame byte-size before the stream is useful.
@@ -454,7 +461,8 @@ ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts
         continue;  // only start of a token
       int w = 0, h = 0;
       if (std::sscanf(line.c_str() + i, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
-        std::fprintf(stderr, "WAVDESK_GEOM w=%d h=%d fps=%d pix_fmt=rgba\n", w, h, fps);
+        std::fprintf(stderr, "WAVDESK_GEOM w=%d h=%d fps=%d dur=%.3f pix_fmt=rgba\n",
+                     w, h, fps, dur);
         std::fflush(stderr);
         geom_emitted = true;
         return;

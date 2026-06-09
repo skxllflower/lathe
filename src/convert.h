@@ -40,6 +40,10 @@ struct ConvertOptions {
   std::string fps;               // stream-frames: output frame cadence (ffmpeg
                                  // -r), forcing a known constant rate so the
                                  // frame consumer can pace. Empty = default.
+  std::string start;             // stream-frames: start offset in seconds
+                                 // (ffmpeg -ss before -i). The consumer seeks by
+                                 // restarting the stream at a new offset. Empty
+                                 // / 0 = from the beginning.
 };
 
 ConvertResult convert(const std::string& input,

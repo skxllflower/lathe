@@ -25,7 +25,7 @@ int print_help() {
     "  lathe convert <input> <output> [options]\n"
     "  lathe extract-frame <input> <output>\n"
     "  lathe extract-audio <input> <output>\n"
-    "  lathe stream-frames <input> [--height=<px>] [--fps=<n>]\n"
+    "  lathe stream-frames <input> [--height=<px>] [--fps=<n>] [--start=<sec>]\n"
     "  lathe bootstrap\n"
     "  lathe --version\n"
     "  lathe --help\n"
@@ -143,6 +143,7 @@ int run_cli(const std::vector<std::string>& args) {
       if      (parse_kv(a, "max-height", &opts.max_height)) continue;
       else if (parse_kv(a, "height",     &opts.max_height)) continue;  // alias
       else if (parse_kv(a, "fps",        &opts.fps))        continue;
+      else if (parse_kv(a, "start",      &opts.start))      continue;
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;
     }
