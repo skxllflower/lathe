@@ -27,6 +27,7 @@ int print_help() {
     "  lathe extract-audio <input> <output>\n"
     "  lathe stream-frames <input> [--height=<px>] [--fps=<n>] [--start=<sec>]\n"
     "  lathe stream-audio <input> [--start=<sec>]\n"
+    "  lathe audio-peaks <input> [--bins=<n>]\n"
     "  lathe bootstrap\n"
     "  lathe --version\n"
     "  lathe --help\n"
@@ -172,6 +173,29 @@ int run_cli(const std::vector<std::string>& args) {
       return 2;
     }
     auto r = lathe::stream_audio(args[2], opts);
+    switch (r) {
+      case lathe::ConvertResult::Ok:               return 0;
+      case lathe::ConvertResult::Cancelled:        return 130;
+      case lathe::ConvertResult::InputNotFound:    return 1;
+      case lathe::ConvertResult::FfmpegFailed:     return 1;
+      case lathe::ConvertResult::BootstrapFailed:  return 1;
+    }
+    return 1;
+  }
+
+  if (cmd == "audio-peaks") {
+    if (args.size() < 3) {
+      std::fputs("error: audio-peaks requires <input>\n", stderr);
+      return 2;
+    }
+    int bins = 2000;
+    for (size_t i = 3; i < args.size(); ++i) {
+      std::string v;
+      if (parse_kv(args[i], "bins", &v)) { try { bins = std::stoi(v); } catch (...) {} continue; }
+      std::fprintf(stderr, "error: unknown argument '%s'\n", args[i].c_str());
+      return 2;
+    }
+    auto r = lathe::audio_peaks(args[2], bins);
     switch (r) {
       case lathe::ConvertResult::Ok:               return 0;
       case lathe::ConvertResult::Cancelled:        return 130;

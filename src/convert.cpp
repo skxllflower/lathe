@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <regex>
 #include <string>
@@ -558,6 +559,78 @@ ConvertResult stream_audio(const std::string& input, const ConvertOptions& opts)
                  rc, last_subprocess_error().c_str());
     return ConvertResult::FfmpegFailed;
   }
+  return ConvertResult::Ok;
+}
+
+ConvertResult audio_peaks(const std::string& input, int bins) {
+  if (bins < 1) bins = 1;
+  if (!ensure_required()) {
+    std::fprintf(stderr, "audio-peaks: ffmpeg not available; bootstrap failed\n");
+    return ConvertResult::BootstrapFailed;
+  }
+  std::error_code ec;
+  if (!fs::exists(path_from_utf8(input), ec)) {
+    std::fprintf(stderr, "audio-peaks: input not found: %s\n", input.c_str());
+    return ConvertResult::InputNotFound;
+  }
+
+  const double dur = probe_duration_seconds(input);
+
+  // Decode the whole audio track to mono float32 at a low rate — plenty to draw
+  // a scrubber waveform, and fast / small to buffer (~8 kHz mono = ~8 MB for a
+  // 4-min track). stdout (the PCM) is captured by the callback, NOT forwarded to
+  // lathe's stdout, so the JSON result below has stdout to itself.
+  std::vector<std::string> argv = { ffmpeg_path(), "-nostdin",
+    "-loglevel", "error", "-nostats",
+    "-i", input, "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "pipe:1" };
+
+  std::vector<float> samples;
+  std::string leftover;  // partial-float bytes carried across chunk boundaries
+  auto on_out = [&](const char* data, std::size_t len) -> bool {
+    leftover.append(data, len);
+    size_t n = leftover.size() / sizeof(float);
+    if (n > 0) {
+      size_t old = samples.size();
+      samples.resize(old + n);
+      std::memcpy(samples.data() + old, leftover.data(), n * sizeof(float));
+      leftover.erase(0, n * sizeof(float));
+    }
+    return true;
+  };
+  auto on_err = [&](const std::string& line) {
+    std::fprintf(stderr, "%s\n", line.c_str());
+  };
+
+  int rc = run_subprocess_streaming(argv, on_out, on_err);
+  if (was_cancelled()) return ConvertResult::Cancelled;
+  if (rc != 0 && samples.empty()) {
+    std::fprintf(stderr, "audio-peaks: ffmpeg failed (exit %d): %s\n",
+                 rc, last_subprocess_error().c_str());
+    return ConvertResult::FfmpegFailed;
+  }
+
+  // Max-abs amplitude per bin across the track.
+  std::vector<float> peaks(static_cast<size_t>(bins), 0.0f);
+  const size_t total = samples.size();
+  for (size_t i = 0; i < total; ++i) {
+    size_t b = static_cast<size_t>((static_cast<double>(i) / static_cast<double>(total)) * bins);
+    if (b >= static_cast<size_t>(bins)) b = static_cast<size_t>(bins) - 1;
+    float a = std::fabs(samples[i]);
+    if (a > peaks[b]) peaks[b] = a;
+  }
+
+  std::string out = "{\"bins\":" + std::to_string(bins) +
+                    ",\"dur\":" + std::to_string(dur) + ",\"peaks\":[";
+  char buf[16];
+  for (int i = 0; i < bins; ++i) {
+    if (i) out.push_back(',');
+    std::snprintf(buf, sizeof(buf), "%.4f", peaks[static_cast<size_t>(i)]);
+    out += buf;
+  }
+  out += "]}";
+  std::fputs(out.c_str(), stdout);
+  std::fputc('\n', stdout);
+  std::fflush(stdout);
   return ConvertResult::Ok;
 }
 

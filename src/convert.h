@@ -76,4 +76,10 @@ ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts
 // EOF, cancel, or the consumer closing the pipe.
 ConvertResult stream_audio(const std::string& input, const ConvertOptions& opts);
 
+// Decode the whole audio track and emit `bins` max-abs amplitude values as a
+// single JSON line on stdout: {"bins":N,"dur":<sec>,"peaks":[...]} (each 0..1).
+// Backs the native video preview's scrubber waveform (the <video> audio-decode
+// path is dead in native mode). Mono, low-rate decode — fast + small.
+ConvertResult audio_peaks(const std::string& input, int bins);
+
 }
