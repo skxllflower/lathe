@@ -1,6 +1,7 @@
 #include "process.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -65,6 +66,37 @@ std::wstring quote_arg_w(const std::wstring& arg) {
   }
   out.push_back(L'"');
   return out;
+}
+
+// stderr-drain thread for run_subprocess_streaming. A plain Win32 thread (not
+// std::thread): MSVC's <thread> pulls in the CRT <process.h>, which collides
+// with lathe's own process.h on the include path. Reads the child's stderr
+// pipe and hands each line to the callback.
+struct ErrDrainCtx {
+  HANDLE pipe;
+  const std::function<void(const std::string&)>* on_line;
+};
+
+DWORD WINAPI err_drain_proc(LPVOID param) {
+  auto* ctx = static_cast<ErrDrainCtx*>(param);
+  std::string line;
+  char buf[2048];
+  DWORD n = 0;
+  while (ReadFile(ctx->pipe, buf, sizeof(buf), &n, nullptr) && n > 0) {
+    for (DWORD i = 0; i < n; ++i) {
+      char c = buf[i];
+      if (c == '\n' || c == '\r') {
+        if (!line.empty()) {
+          if (*ctx->on_line) (*ctx->on_line)(line);
+          line.clear();
+        }
+      } else {
+        line.push_back(c);
+      }
+    }
+  }
+  if (!line.empty() && *ctx->on_line) (*ctx->on_line)(line);
+  return 0;
 }
 
 #endif
@@ -199,6 +231,124 @@ int run_subprocess(const std::vector<std::string>& argv,
   return static_cast<int>(exit_code);
 }
 
+int run_subprocess_streaming(
+    const std::vector<std::string>& argv,
+    const std::function<bool(const char*, std::size_t)>& on_stdout,
+    const std::function<void(const std::string&)>& on_stderr_line) {
+  g_cancelled.store(false);
+  g_last_error.clear();
+  if (argv.empty()) { g_last_error = "empty argv"; return -1; }
+
+  std::wstring cmd_line;
+  for (size_t i = 0; i < argv.size(); ++i) {
+    if (i) cmd_line.push_back(L' ');
+    cmd_line += quote_arg_w(utf8_to_utf16(argv[i]));
+  }
+
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  // Separate pipes for stdout (binary frames) and stderr (text lines) so the
+  // RGBA stream is never corrupted by interleaved log text.
+  HANDLE out_rd = nullptr, out_wr = nullptr;
+  HANDLE err_rd = nullptr, err_wr = nullptr;
+  if (!CreatePipe(&out_rd, &out_wr, &sa, 0)) {
+    g_last_error = "CreatePipe(out) failed";
+    return -1;
+  }
+  SetHandleInformation(out_rd, HANDLE_FLAG_INHERIT, 0);
+  if (!CreatePipe(&err_rd, &err_wr, &sa, 0)) {
+    CloseHandle(out_rd); CloseHandle(out_wr);
+    g_last_error = "CreatePipe(err) failed";
+    return -1;
+  }
+  SetHandleInformation(err_rd, HANDLE_FLAG_INHERIT, 0);
+
+  HANDLE job = CreateJobObjectW(nullptr, nullptr);
+  if (!job) {
+    CloseHandle(out_rd); CloseHandle(out_wr);
+    CloseHandle(err_rd); CloseHandle(err_wr);
+    g_last_error = "CreateJobObjectW failed";
+    return -1;
+  }
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+  jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                          &jeli, sizeof(jeli));
+
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = out_wr;
+  si.hStdError  = err_wr;
+  si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+
+  PROCESS_INFORMATION pi{};
+  std::wstring cmd_buf = cmd_line;
+
+  BOOL ok = CreateProcessW(
+    nullptr, &cmd_buf[0], nullptr, nullptr, TRUE,
+    CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+
+  if (!ok) {
+    DWORD err = GetLastError();
+    char msg[128];
+    std::snprintf(msg, sizeof(msg),
+                  "CreateProcessW failed (GetLastError=%lu)", err);
+    g_last_error = msg;
+    CloseHandle(out_rd); CloseHandle(out_wr);
+    CloseHandle(err_rd); CloseHandle(err_wr); CloseHandle(job);
+    return -1;
+  }
+
+  AssignProcessToJobObject(job, pi.hProcess);
+  ResumeThread(pi.hThread);
+
+  CloseHandle(out_wr);  // parent only reads
+  CloseHandle(err_wr);
+
+  g_job = job;
+  SetConsoleCtrlHandler(ctrl_handler, TRUE);
+
+  // Drain stderr on a worker thread so the main thread can block on the
+  // high-bandwidth stdout pipe without deadlocking when the child fills its
+  // stderr buffer. ctx lives on this stack until we join the thread below.
+  ErrDrainCtx err_ctx{ err_rd, &on_stderr_line };
+  HANDLE err_thread = CreateThread(nullptr, 0, err_drain_proc, &err_ctx, 0, nullptr);
+
+  // Forward stdout bytes raw. A false return from on_stdout (consumer closed
+  // the downstream pipe) terminates the child so it stops decoding.
+  char buf[65536];
+  DWORD n = 0;
+  while (ReadFile(out_rd, buf, sizeof(buf), &n, nullptr) && n > 0) {
+    if (on_stdout && !on_stdout(buf, static_cast<std::size_t>(n))) {
+      TerminateJobObject(job, 1);
+      break;
+    }
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exit_code = 0;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+
+  if (err_thread) {
+    WaitForSingleObject(err_thread, INFINITE);
+    CloseHandle(err_thread);
+  }
+
+  SetConsoleCtrlHandler(ctrl_handler, FALSE);
+  g_job = nullptr;
+
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  CloseHandle(out_rd);
+  CloseHandle(err_rd);
+  CloseHandle(job);
+
+  return static_cast<int>(exit_code);
+}
+
 std::string exe_dir() {
   wchar_t buf[MAX_PATH];
   DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
@@ -244,6 +394,16 @@ int run_subprocess(const std::vector<std::string>& argv,
   int rc = pclose(pipe);
   if (WIFEXITED(rc)) rc = WEXITSTATUS(rc);
   return rc;
+}
+
+int run_subprocess_streaming(
+    const std::vector<std::string>&,
+    const std::function<bool(const char*, std::size_t)>&,
+    const std::function<void(const std::string&)>&) {
+  // WAVdesk's video engine is Windows-first; the separate-pipe binary stream
+  // isn't wired up on POSIX yet. Fail loudly rather than silently no-op.
+  g_last_error = "run_subprocess_streaming not implemented on POSIX";
+  return -1;
 }
 
 std::string exe_dir() {

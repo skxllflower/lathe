@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <regex>
 #include <string>
@@ -16,6 +17,8 @@
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
   #include <windows.h>
+  #include <fcntl.h>
+  #include <io.h>
 #endif
 
 namespace lathe {
@@ -393,6 +396,93 @@ ConvertResult extract(const std::string& input,
   }
 
   progress_done(output);
+  return ConvertResult::Ok;
+}
+
+ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts) {
+  if (!ensure_required()) {
+    std::fprintf(stderr, "stream-frames: ffmpeg not available; bootstrap failed\n");
+    return ConvertResult::BootstrapFailed;
+  }
+
+  std::error_code ec;
+  if (!fs::exists(path_from_utf8(input), ec)) {
+    std::fprintf(stderr, "stream-frames: input not found: %s\n", input.c_str());
+    return ConvertResult::InputNotFound;
+  }
+
+  // stdout must be raw binary: on Windows the CRT translates '\n' -> '\r\n' in
+  // text mode, which would corrupt RGBA frame bytes. Switch to binary once,
+  // before a single byte is written.
+#ifdef _WIN32
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
+  int height = 720;
+  if (!opts.max_height.empty()) { try { height = std::stoi(opts.max_height); } catch (...) {} }
+  if (height <= 0) height = 720;
+  int fps = 24;
+  if (!opts.fps.empty()) { try { fps = std::stoi(opts.fps); } catch (...) {} }
+  if (fps <= 0) fps = 24;
+
+  std::vector<std::string> argv = {
+    ffmpeg_path(),
+    "-nostdin",
+    "-loglevel", "info",  // so the Output stream line (carrying WxH) hits stderr
+    "-nostats",           // ...without the continuous progress spam
+    "-i", input,
+    "-an",                // video-only for now; audio (live PCM) lands later
+    "-vf", "scale=-2:" + std::to_string(height),
+    "-r", std::to_string(fps),
+    "-f", "rawvideo",
+    "-pix_fmt", "rgba",
+    "pipe:1",
+  };
+
+  // Pull the negotiated output geometry out of ffmpeg's stderr and announce it
+  // once, so the consumer knows the frame byte-size before the stream is useful.
+  // The output line reads e.g. "Stream #0:0: Video: rawvideo (RGBA / 0x...),
+  // rgba, 406x720, ...". The fourcc "0x41424752" parses as WxH with W=0, which
+  // the w>0 guard rejects, so the first valid NxM token is the real geometry.
+  bool geom_emitted = false;
+  auto on_err = [&](const std::string& line) {
+    std::fprintf(stderr, "%s\n", line.c_str());  // echo ffmpeg diagnostics
+    if (geom_emitted || line.find("Video: rawvideo") == std::string::npos) return;
+    for (size_t i = 0; i + 2 < line.size(); ++i) {
+      if (!std::isdigit(static_cast<unsigned char>(line[i]))) continue;
+      if (i > 0 && (std::isdigit(static_cast<unsigned char>(line[i - 1])) || line[i - 1] == 'x'))
+        continue;  // only start of a token
+      int w = 0, h = 0;
+      if (std::sscanf(line.c_str() + i, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+        std::fprintf(stderr, "WAVDESK_GEOM w=%d h=%d fps=%d pix_fmt=rgba\n", w, h, fps);
+        std::fflush(stderr);
+        geom_emitted = true;
+        return;
+      }
+    }
+  };
+
+  // Forward each decoded frame chunk to stdout. A short write means the consumer
+  // closed the pipe (end of playback): return false so the child is terminated
+  // and we stop decoding instead of draining the whole file.
+  auto on_out = [&](const char* data, std::size_t len) -> bool {
+    size_t wrote = std::fwrite(data, 1, len, stdout);
+    std::fflush(stdout);
+    return wrote == len;
+  };
+
+  int rc = run_subprocess_streaming(argv, on_out, on_err);
+  std::fflush(stdout);
+
+  if (was_cancelled()) return ConvertResult::Cancelled;
+  // A consumer closing the pipe (or us terminating ffmpeg on its behalf) leaves
+  // a non-zero exit even though frames flowed fine — not a failure. Only treat
+  // it as a failure if ffmpeg never even produced a decodable stream.
+  if (rc != 0 && !geom_emitted) {
+    std::fprintf(stderr, "stream-frames: ffmpeg failed (exit %d): %s\n",
+                 rc, last_subprocess_error().c_str());
+    return ConvertResult::FfmpegFailed;
+  }
   return ConvertResult::Ok;
 }
 

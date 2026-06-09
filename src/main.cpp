@@ -25,6 +25,7 @@ int print_help() {
     "  lathe convert <input> <output> [options]\n"
     "  lathe extract-frame <input> <output>\n"
     "  lathe extract-audio <input> <output>\n"
+    "  lathe stream-frames <input> [--height=<px>] [--fps=<n>]\n"
     "  lathe bootstrap\n"
     "  lathe --version\n"
     "  lathe --help\n"
@@ -121,6 +122,31 @@ int run_cli(const std::vector<std::string>& args) {
     }
     bool frame_only = (cmd == "extract-frame");
     auto r = lathe::extract(args[2], args[3], frame_only);
+    switch (r) {
+      case lathe::ConvertResult::Ok:               return 0;
+      case lathe::ConvertResult::Cancelled:        return 130;
+      case lathe::ConvertResult::InputNotFound:    return 1;
+      case lathe::ConvertResult::FfmpegFailed:     return 1;
+      case lathe::ConvertResult::BootstrapFailed:  return 1;
+    }
+    return 1;
+  }
+
+  if (cmd == "stream-frames") {
+    if (args.size() < 3) {
+      std::fputs("error: stream-frames requires <input>\n", stderr);
+      return 2;
+    }
+    lathe::ConvertOptions opts;
+    for (size_t i = 3; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      if      (parse_kv(a, "max-height", &opts.max_height)) continue;
+      else if (parse_kv(a, "height",     &opts.max_height)) continue;  // alias
+      else if (parse_kv(a, "fps",        &opts.fps))        continue;
+      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+      return 2;
+    }
+    auto r = lathe::stream_frames(args[2], opts);
     switch (r) {
       case lathe::ConvertResult::Ok:               return 0;
       case lathe::ConvertResult::Cancelled:        return 130;

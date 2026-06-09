@@ -37,6 +37,9 @@ struct ConvertOptions {
   std::string preset;            // libx264/x265 -preset (ultrafast..veryslow).
                                  // Empty = encoder default (medium). WAVdesk's
                                  // preview passes "veryfast" for a fast encode.
+  std::string fps;               // stream-frames: output frame cadence (ffmpeg
+                                 // -r), forcing a known constant rate so the
+                                 // frame consumer can pace. Empty = default.
 };
 
 ConvertResult convert(const std::string& input,
@@ -50,5 +53,15 @@ ConvertResult convert(const std::string& input,
 ConvertResult extract(const std::string& input,
                       const std::string& output,
                       bool frame_only);
+
+// Decode `input` to a live raw RGBA video-frame stream on stdout (no audio),
+// for direct preview playback without a transcode-to-file. stdout carries ONLY
+// concatenated rawvideo frames (binary, no framing markers); the negotiated
+// geometry is announced ONCE on stderr as "WAVDESK_GEOM w=<W> h=<H> fps=<FPS>
+// pix_fmt=rgba" before the frame bytes are usable, so the consumer knows the
+// per-frame byte size. opts.max_height caps the height (keep aspect); opts.fps
+// sets the cadence. Streams until end-of-file, cancel, or the consumer closing
+// the pipe (a normal end of playback, not an error).
+ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts);
 
 }
