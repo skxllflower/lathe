@@ -494,4 +494,71 @@ ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts
   return ConvertResult::Ok;
 }
 
+ConvertResult stream_audio(const std::string& input, const ConvertOptions& opts) {
+  if (!ensure_required()) {
+    std::fprintf(stderr, "stream-audio: ffmpeg not available; bootstrap failed\n");
+    return ConvertResult::BootstrapFailed;
+  }
+  std::error_code ec;
+  if (!fs::exists(path_from_utf8(input), ec)) {
+    std::fprintf(stderr, "stream-audio: input not found: %s\n", input.c_str());
+    return ConvertResult::InputNotFound;
+  }
+
+  // Raw binary PCM on stdout (no CRT newline translation).
+#ifdef _WIN32
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
+  double start = 0.0;
+  if (!opts.start.empty()) { try { start = std::stod(opts.start); } catch (...) {} }
+  if (start < 0.0) start = 0.0;
+  const double dur = probe_duration_seconds(input);
+
+  // Force a fixed interleaved float32 layout so the daemon needs no probing or
+  // resampling logic of its own: 48 kHz stereo f32le. ffmpeg resamples/downmixes
+  // to match.
+  const int sr = 48000;
+  const int ch = 2;
+
+  std::vector<std::string> argv = { ffmpeg_path(), "-nostdin",
+    "-loglevel", "error", "-nostats" };
+  if (start > 0.0) { argv.push_back("-ss"); argv.push_back(std::to_string(start)); }
+  argv.push_back("-i");  argv.push_back(input);
+  argv.push_back("-vn");                                  // audio only
+  argv.push_back("-ar"); argv.push_back(std::to_string(sr));
+  argv.push_back("-ac"); argv.push_back(std::to_string(ch));
+  argv.push_back("-f");  argv.push_back("f32le");         // interleaved float32
+  argv.push_back("pipe:1");
+
+  // We force the format, so the layout is known up front — announce it before
+  // any samples so the consumer can size its ring buffer / track position.
+  std::fprintf(stderr, "WAVDESK_APCM sr=%d ch=%d fmt=f32le dur=%.3f\n", sr, ch, dur);
+  std::fflush(stderr);
+
+  bool any = false;
+  auto on_out = [&](const char* data, std::size_t len) -> bool {
+    any = true;
+    size_t wrote = std::fwrite(data, 1, len, stdout);
+    std::fflush(stdout);
+    return wrote == len;
+  };
+  auto on_err = [&](const std::string& line) {
+    std::fprintf(stderr, "%s\n", line.c_str());
+  };
+
+  int rc = run_subprocess_streaming(argv, on_out, on_err);
+  std::fflush(stdout);
+
+  if (was_cancelled()) return ConvertResult::Cancelled;
+  // No samples + non-zero exit = real failure (e.g. the file has no audio
+  // track). The consumer treats that as "video plays muted".
+  if (rc != 0 && !any) {
+    std::fprintf(stderr, "stream-audio: ffmpeg failed (exit %d): %s\n",
+                 rc, last_subprocess_error().c_str());
+    return ConvertResult::FfmpegFailed;
+  }
+  return ConvertResult::Ok;
+}
+
 }

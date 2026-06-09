@@ -68,4 +68,12 @@ ConvertResult extract(const std::string& input,
 // the pipe (a normal end of playback, not an error).
 ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts);
 
+// Decode `input`'s audio track to a live raw PCM stream on stdout (no video),
+// for synced native preview playback. stdout carries ONLY interleaved float32
+// samples (48 kHz stereo, forced); the layout is announced once on stderr as
+// "WAVDESK_APCM sr=<n> ch=<n> fmt=f32le dur=<sec>" before samples flow.
+// opts.start seeks via -ss (consumer restarts the stream to seek). Streams until
+// EOF, cancel, or the consumer closing the pipe.
+ConvertResult stream_audio(const std::string& input, const ConvertOptions& opts);
+
 }
