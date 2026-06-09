@@ -37,6 +37,8 @@ int print_help() {
     "  --compression-level=<n>     FLAC compression 0..12 (5 = default)\n"
     "  --quality=<n>               image/video quality 0..100 (higher = better)\n"
     "  --duration=<sec>            cap output to first <sec> seconds (ffmpeg -t)\n"
+    "  --max-height=<px>           downscale: cap output height, keep aspect\n"
+    "  --preset=<name>             x264/x265 preset (ultrafast..veryslow)\n"
     "\n"
     "On Windows, paths and filenames are UTF-8 (non-ASCII characters\n"
     "are preserved end-to-end). ffmpeg.exe is resolved from the\n"
@@ -95,6 +97,8 @@ int run_cli(const std::vector<std::string>& args) {
       else if (parse_kv(a, "compression-level", &opts.compression_level)) continue;
       else if (parse_kv(a, "quality",           &opts.quality))           continue;
       else if (parse_kv(a, "duration",          &opts.duration))          continue;
+      else if (parse_kv(a, "max-height",        &opts.max_height))        continue;
+      else if (parse_kv(a, "preset",            &opts.preset))            continue;
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;
     }

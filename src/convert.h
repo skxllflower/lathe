@@ -29,6 +29,14 @@ struct ConvertOptions {
                                  // -t). Empty = full file. Used by WAVdesk's
                                  // preview transcode to decode only the first
                                  // few seconds of a long lossy file.
+  std::string max_height;        // downscale cap: limit output HEIGHT to this
+                                 // many px, keep aspect (even width), never
+                                 // upscale. Empty = source resolution. Lets
+                                 // WAVdesk's video preview transcode a huge/4K
+                                 // source cheaply instead of at full res.
+  std::string preset;            // libx264/x265 -preset (ultrafast..veryslow).
+                                 // Empty = encoder default (medium). WAVdesk's
+                                 // preview passes "veryfast" for a fast encode.
 };
 
 ConvertResult convert(const std::string& input,
