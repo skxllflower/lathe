@@ -64,10 +64,6 @@ bool parse_kv(const std::string& a, const std::string& key, std::string* out) {
 int run_cli(const std::vector<std::string>& args) {
   if (args.size() < 2) return print_help();
 
-  // Pre-vendor-folder bootstraps left ffmpeg.exe next to the executable;
-  // adopt it into the shared bin once so it isn't re-downloaded.
-  lathe::migrate_legacy_binaries();
-
   const std::string& cmd = args[1];
 
   if (cmd == "--help" || cmd == "-h") return print_help();
@@ -75,6 +71,11 @@ int run_cli(const std::vector<std::string>& args) {
     std::puts("lathe 0.2.0");
     return 0;
   }
+
+  // Pre-vendor-folder bootstraps left ffmpeg.exe next to the executable;
+  // adopt it into the shared bin once so it isn't re-downloaded. After the
+  // trivial --help/--version returns so a pure help query never moves files.
+  lathe::migrate_legacy_binaries();
 
   if (cmd == "bootstrap") {
     return lathe::ensure_required() ? 0 : 1;

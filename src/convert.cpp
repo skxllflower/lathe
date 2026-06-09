@@ -261,7 +261,12 @@ ConvertResult convert(const std::string& input,
   // error) means the encode failed even when a partial output file was created
   // by `-y`; a missing or zero-byte output is a failure too. Remove any partial
   // so a truncated file never looks like a clean convert to the caller.
-  const bool out_ok = fs::exists(out_path, ec) && fs::file_size(out_path, ec) > 0;
+  // file_size returns uintmax_t(-1) on error, and (-1 > 0) is TRUE for
+  // unsigned — so gate on the error_code, not the size comparison, or a stat
+  // failure on the fresh output reads as a clean convert.
+  std::error_code sz_ec;
+  const std::uintmax_t out_sz = fs::file_size(out_path, sz_ec);
+  const bool out_ok = !sz_ec && out_sz > 0;
   if (rc != 0 || !out_ok) {
     fs::remove(out_path, ec);
     progress_error(!last_error_line.empty()
@@ -356,7 +361,12 @@ ConvertResult extract(const std::string& input,
   // error) means the encode failed even when a partial output file was created
   // by `-y`; a missing or zero-byte output is a failure too. Remove any partial
   // so a truncated file never looks like a clean convert to the caller.
-  const bool out_ok = fs::exists(out_path, ec) && fs::file_size(out_path, ec) > 0;
+  // file_size returns uintmax_t(-1) on error, and (-1 > 0) is TRUE for
+  // unsigned — so gate on the error_code, not the size comparison, or a stat
+  // failure on the fresh output reads as a clean convert.
+  std::error_code sz_ec;
+  const std::uintmax_t out_sz = fs::file_size(out_path, sz_ec);
+  const bool out_ok = !sz_ec && out_sz > 0;
   if (rc != 0 || !out_ok) {
     fs::remove(out_path, ec);
     progress_error(!last_error_line.empty()

@@ -56,15 +56,17 @@ fs::path vendor_root() {
 #endif
 }
 
-fs::path shared_bin_path() {
-#ifdef _WIN32
-  return vendor_root() / "Shared" / "bin";
-#elif defined(__APPLE__)
-  return vendor_root() / "Shared" / "bin";
+// Casing matches the platform's vendor_root() convention. Kept as a constant
+// (not inline cfg branches) so the shared region stays byte-identical to
+// Latch's paths.cpp — the two are hand-synced, so a clean diff is the only
+// drift check we have.
+#if defined(_WIN32) || defined(__APPLE__)
+constexpr const char* kSharedDir = "Shared";
 #else
-  return vendor_root() / "shared" / "bin";
+constexpr const char* kSharedDir = "shared";
 #endif
-}
+
+fs::path shared_bin_path() { return vendor_root() / kSharedDir / "bin"; }
 
 std::string json_escape(const std::string& s) {
   std::string out;
@@ -128,8 +130,13 @@ std::string resolved_ffmpeg() {
 }
 
 bool ffmpeg_exists() {
+  // A zero-byte file counts as missing: a crashed pre-tmp-era download could
+  // leave an empty binary that bare exists() would treat as installed,
+  // permanently blocking re-bootstrap. file_size sets ec (we require none) on
+  // a missing OR unreadable path, so this is also the existence check.
   std::error_code ec;
-  return fs::exists(path_from_utf8(resolved_ffmpeg()), ec);
+  const std::uintmax_t sz = fs::file_size(path_from_utf8(resolved_ffmpeg()), ec);
+  return !ec && sz > 0;
 }
 
 void migrate_legacy_binaries() {
