@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <regex>
 #include <string>
@@ -16,6 +18,8 @@
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
   #include <windows.h>
+  #include <fcntl.h>
+  #include <io.h>
 #endif
 
 namespace lathe {
@@ -393,6 +397,240 @@ ConvertResult extract(const std::string& input,
   }
 
   progress_done(output);
+  return ConvertResult::Ok;
+}
+
+ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts) {
+  if (!ensure_required()) {
+    std::fprintf(stderr, "stream-frames: ffmpeg not available; bootstrap failed\n");
+    return ConvertResult::BootstrapFailed;
+  }
+
+  std::error_code ec;
+  if (!fs::exists(path_from_utf8(input), ec)) {
+    std::fprintf(stderr, "stream-frames: input not found: %s\n", input.c_str());
+    return ConvertResult::InputNotFound;
+  }
+
+  // stdout must be raw binary: on Windows the CRT translates '\n' -> '\r\n' in
+  // text mode, which would corrupt RGBA frame bytes. Switch to binary once,
+  // before a single byte is written.
+#ifdef _WIN32
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
+  int height = 720;
+  if (!opts.max_height.empty()) { try { height = std::stoi(opts.max_height); } catch (...) {} }
+  if (height <= 0) height = 720;
+  int fps = 24;
+  if (!opts.fps.empty()) { try { fps = std::stoi(opts.fps); } catch (...) {} }
+  if (fps <= 0) fps = 24;
+  double start = 0.0;
+  if (!opts.start.empty()) { try { start = std::stod(opts.start); } catch (...) {} }
+  if (start < 0.0) start = 0.0;
+
+  // Total duration so the consumer can size its scrubber. A quick `-i` probe
+  // (no decode), same one extract/convert use.
+  const double dur = probe_duration_seconds(input);
+
+  std::vector<std::string> argv = { ffmpeg_path(), "-nostdin",
+    "-loglevel", "info",  // so the Output stream line (carrying WxH) hits stderr
+    "-nostats" };         // ...without the continuous progress spam
+  // Input seeking (-ss BEFORE -i): fast + accurate enough for preview scrub.
+  // The consumer asks for a start offset to seek by restarting the stream.
+  if (start > 0.0) { argv.push_back("-ss"); argv.push_back(std::to_string(start)); }
+  argv.push_back("-i");        argv.push_back(input);
+  argv.push_back("-an");       // video-only for now; audio (live PCM) lands later
+  argv.push_back("-vf");       argv.push_back("scale=-2:" + std::to_string(height));
+  argv.push_back("-r");        argv.push_back(std::to_string(fps));
+  argv.push_back("-f");        argv.push_back("rawvideo");
+  argv.push_back("-pix_fmt");  argv.push_back("rgba");
+  argv.push_back("pipe:1");
+
+  // Pull the negotiated output geometry out of ffmpeg's stderr and announce it
+  // once, so the consumer knows the frame byte-size before the stream is useful.
+  // The output line reads e.g. "Stream #0:0: Video: rawvideo (RGBA / 0x...),
+  // rgba, 406x720, ...". The fourcc "0x41424752" parses as WxH with W=0, which
+  // the w>0 guard rejects, so the first valid NxM token is the real geometry.
+  bool geom_emitted = false;
+  auto on_err = [&](const std::string& line) {
+    std::fprintf(stderr, "%s\n", line.c_str());  // echo ffmpeg diagnostics
+    if (geom_emitted || line.find("Video: rawvideo") == std::string::npos) return;
+    for (size_t i = 0; i + 2 < line.size(); ++i) {
+      if (!std::isdigit(static_cast<unsigned char>(line[i]))) continue;
+      if (i > 0 && (std::isdigit(static_cast<unsigned char>(line[i - 1])) || line[i - 1] == 'x'))
+        continue;  // only start of a token
+      int w = 0, h = 0;
+      if (std::sscanf(line.c_str() + i, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+        std::fprintf(stderr, "WAVDESK_GEOM w=%d h=%d fps=%d dur=%.3f pix_fmt=rgba\n",
+                     w, h, fps, dur);
+        std::fflush(stderr);
+        geom_emitted = true;
+        return;
+      }
+    }
+  };
+
+  // Forward each decoded frame chunk to stdout. A short write means the consumer
+  // closed the pipe (end of playback): return false so the child is terminated
+  // and we stop decoding instead of draining the whole file.
+  auto on_out = [&](const char* data, std::size_t len) -> bool {
+    size_t wrote = std::fwrite(data, 1, len, stdout);
+    std::fflush(stdout);
+    return wrote == len;
+  };
+
+  int rc = run_subprocess_streaming(argv, on_out, on_err);
+  std::fflush(stdout);
+
+  if (was_cancelled()) return ConvertResult::Cancelled;
+  // A consumer closing the pipe (or us terminating ffmpeg on its behalf) leaves
+  // a non-zero exit even though frames flowed fine — not a failure. Only treat
+  // it as a failure if ffmpeg never even produced a decodable stream.
+  if (rc != 0 && !geom_emitted) {
+    std::fprintf(stderr, "stream-frames: ffmpeg failed (exit %d): %s\n",
+                 rc, last_subprocess_error().c_str());
+    return ConvertResult::FfmpegFailed;
+  }
+  return ConvertResult::Ok;
+}
+
+ConvertResult stream_audio(const std::string& input, const ConvertOptions& opts) {
+  if (!ensure_required()) {
+    std::fprintf(stderr, "stream-audio: ffmpeg not available; bootstrap failed\n");
+    return ConvertResult::BootstrapFailed;
+  }
+  std::error_code ec;
+  if (!fs::exists(path_from_utf8(input), ec)) {
+    std::fprintf(stderr, "stream-audio: input not found: %s\n", input.c_str());
+    return ConvertResult::InputNotFound;
+  }
+
+  // Raw binary PCM on stdout (no CRT newline translation).
+#ifdef _WIN32
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
+  double start = 0.0;
+  if (!opts.start.empty()) { try { start = std::stod(opts.start); } catch (...) {} }
+  if (start < 0.0) start = 0.0;
+  const double dur = probe_duration_seconds(input);
+
+  // Force a fixed interleaved float32 layout so the daemon needs no probing or
+  // resampling logic of its own: 48 kHz stereo f32le. ffmpeg resamples/downmixes
+  // to match.
+  const int sr = 48000;
+  const int ch = 2;
+
+  std::vector<std::string> argv = { ffmpeg_path(), "-nostdin",
+    "-loglevel", "error", "-nostats" };
+  if (start > 0.0) { argv.push_back("-ss"); argv.push_back(std::to_string(start)); }
+  argv.push_back("-i");  argv.push_back(input);
+  argv.push_back("-vn");                                  // audio only
+  argv.push_back("-ar"); argv.push_back(std::to_string(sr));
+  argv.push_back("-ac"); argv.push_back(std::to_string(ch));
+  argv.push_back("-f");  argv.push_back("f32le");         // interleaved float32
+  argv.push_back("pipe:1");
+
+  // We force the format, so the layout is known up front — announce it before
+  // any samples so the consumer can size its ring buffer / track position.
+  std::fprintf(stderr, "WAVDESK_APCM sr=%d ch=%d fmt=f32le dur=%.3f\n", sr, ch, dur);
+  std::fflush(stderr);
+
+  bool any = false;
+  auto on_out = [&](const char* data, std::size_t len) -> bool {
+    any = true;
+    size_t wrote = std::fwrite(data, 1, len, stdout);
+    std::fflush(stdout);
+    return wrote == len;
+  };
+  auto on_err = [&](const std::string& line) {
+    std::fprintf(stderr, "%s\n", line.c_str());
+  };
+
+  int rc = run_subprocess_streaming(argv, on_out, on_err);
+  std::fflush(stdout);
+
+  if (was_cancelled()) return ConvertResult::Cancelled;
+  // No samples + non-zero exit = real failure (e.g. the file has no audio
+  // track). The consumer treats that as "video plays muted".
+  if (rc != 0 && !any) {
+    std::fprintf(stderr, "stream-audio: ffmpeg failed (exit %d): %s\n",
+                 rc, last_subprocess_error().c_str());
+    return ConvertResult::FfmpegFailed;
+  }
+  return ConvertResult::Ok;
+}
+
+ConvertResult audio_peaks(const std::string& input, int bins) {
+  if (bins < 1) bins = 1;
+  if (!ensure_required()) {
+    std::fprintf(stderr, "audio-peaks: ffmpeg not available; bootstrap failed\n");
+    return ConvertResult::BootstrapFailed;
+  }
+  std::error_code ec;
+  if (!fs::exists(path_from_utf8(input), ec)) {
+    std::fprintf(stderr, "audio-peaks: input not found: %s\n", input.c_str());
+    return ConvertResult::InputNotFound;
+  }
+
+  const double dur = probe_duration_seconds(input);
+
+  // Decode the whole audio track to mono float32 at a low rate — plenty to draw
+  // a scrubber waveform, and fast / small to buffer (~8 kHz mono = ~8 MB for a
+  // 4-min track). stdout (the PCM) is captured by the callback, NOT forwarded to
+  // lathe's stdout, so the JSON result below has stdout to itself.
+  std::vector<std::string> argv = { ffmpeg_path(), "-nostdin",
+    "-loglevel", "error", "-nostats",
+    "-i", input, "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "pipe:1" };
+
+  std::vector<float> samples;
+  std::string leftover;  // partial-float bytes carried across chunk boundaries
+  auto on_out = [&](const char* data, std::size_t len) -> bool {
+    leftover.append(data, len);
+    size_t n = leftover.size() / sizeof(float);
+    if (n > 0) {
+      size_t old = samples.size();
+      samples.resize(old + n);
+      std::memcpy(samples.data() + old, leftover.data(), n * sizeof(float));
+      leftover.erase(0, n * sizeof(float));
+    }
+    return true;
+  };
+  auto on_err = [&](const std::string& line) {
+    std::fprintf(stderr, "%s\n", line.c_str());
+  };
+
+  int rc = run_subprocess_streaming(argv, on_out, on_err);
+  if (was_cancelled()) return ConvertResult::Cancelled;
+  if (rc != 0 && samples.empty()) {
+    std::fprintf(stderr, "audio-peaks: ffmpeg failed (exit %d): %s\n",
+                 rc, last_subprocess_error().c_str());
+    return ConvertResult::FfmpegFailed;
+  }
+
+  // Max-abs amplitude per bin across the track.
+  std::vector<float> peaks(static_cast<size_t>(bins), 0.0f);
+  const size_t total = samples.size();
+  for (size_t i = 0; i < total; ++i) {
+    size_t b = static_cast<size_t>((static_cast<double>(i) / static_cast<double>(total)) * bins);
+    if (b >= static_cast<size_t>(bins)) b = static_cast<size_t>(bins) - 1;
+    float a = std::fabs(samples[i]);
+    if (a > peaks[b]) peaks[b] = a;
+  }
+
+  std::string out = "{\"bins\":" + std::to_string(bins) +
+                    ",\"dur\":" + std::to_string(dur) + ",\"peaks\":[";
+  char buf[16];
+  for (int i = 0; i < bins; ++i) {
+    if (i) out.push_back(',');
+    std::snprintf(buf, sizeof(buf), "%.4f", peaks[static_cast<size_t>(i)]);
+    out += buf;
+  }
+  out += "]}";
+  std::fputs(out.c_str(), stdout);
+  std::fputc('\n', stdout);
+  std::fflush(stdout);
   return ConvertResult::Ok;
 }
 

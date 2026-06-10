@@ -37,6 +37,13 @@ struct ConvertOptions {
   std::string preset;            // libx264/x265 -preset (ultrafast..veryslow).
                                  // Empty = encoder default (medium). WAVdesk's
                                  // preview passes "veryfast" for a fast encode.
+  std::string fps;               // stream-frames: output frame cadence (ffmpeg
+                                 // -r), forcing a known constant rate so the
+                                 // frame consumer can pace. Empty = default.
+  std::string start;             // stream-frames: start offset in seconds
+                                 // (ffmpeg -ss before -i). The consumer seeks by
+                                 // restarting the stream at a new offset. Empty
+                                 // / 0 = from the beginning.
 };
 
 ConvertResult convert(const std::string& input,
@@ -50,5 +57,29 @@ ConvertResult convert(const std::string& input,
 ConvertResult extract(const std::string& input,
                       const std::string& output,
                       bool frame_only);
+
+// Decode `input` to a live raw RGBA video-frame stream on stdout (no audio),
+// for direct preview playback without a transcode-to-file. stdout carries ONLY
+// concatenated rawvideo frames (binary, no framing markers); the negotiated
+// geometry is announced ONCE on stderr as "WAVDESK_GEOM w=<W> h=<H> fps=<FPS>
+// pix_fmt=rgba" before the frame bytes are usable, so the consumer knows the
+// per-frame byte size. opts.max_height caps the height (keep aspect); opts.fps
+// sets the cadence. Streams until end-of-file, cancel, or the consumer closing
+// the pipe (a normal end of playback, not an error).
+ConvertResult stream_frames(const std::string& input, const ConvertOptions& opts);
+
+// Decode `input`'s audio track to a live raw PCM stream on stdout (no video),
+// for synced native preview playback. stdout carries ONLY interleaved float32
+// samples (48 kHz stereo, forced); the layout is announced once on stderr as
+// "WAVDESK_APCM sr=<n> ch=<n> fmt=f32le dur=<sec>" before samples flow.
+// opts.start seeks via -ss (consumer restarts the stream to seek). Streams until
+// EOF, cancel, or the consumer closing the pipe.
+ConvertResult stream_audio(const std::string& input, const ConvertOptions& opts);
+
+// Decode the whole audio track and emit `bins` max-abs amplitude values as a
+// single JSON line on stdout: {"bins":N,"dur":<sec>,"peaks":[...]} (each 0..1).
+// Backs the native video preview's scrubber waveform (the <video> audio-decode
+// path is dead in native mode). Mono, low-rate decode — fast + small.
+ConvertResult audio_peaks(const std::string& input, int bins);
 
 }

@@ -1,5 +1,7 @@
 #include "bootstrap.h"
 #include "convert.h"
+#include "decode.h"
+#include "libav.h"
 #include "paths.h"
 #include "process.h"
 
@@ -25,6 +27,10 @@ int print_help() {
     "  lathe convert <input> <output> [options]\n"
     "  lathe extract-frame <input> <output>\n"
     "  lathe extract-audio <input> <output>\n"
+    "  lathe stream-frames <input> [--height=<px>] [--fps=<n>] [--start=<sec>]\n"
+    "  lathe stream-audio <input> [--start=<sec>]\n"
+    "  lathe decode-server <input> [--height=<px>] [--start=<sec>] [--audio]\n"
+    "  lathe audio-peaks <input> [--bins=<n>]\n"
     "  lathe bootstrap\n"
     "  lathe --version\n"
     "  lathe --help\n"
@@ -72,6 +78,44 @@ int run_cli(const std::vector<std::string>& args) {
   if (cmd == "--version" || cmd == "-v") {
     std::puts("lathe 0.2.0");
     return 0;
+  }
+  if (cmd == "libav-version") {
+    std::fputs(lathe::libav_versions().c_str(), stdout);
+    return 0;
+  }
+  if (cmd == "decode-probe") {
+    if (args.size() < 3) {
+      std::fputs("error: decode-probe requires <input>\n", stderr);
+      return 2;
+    }
+    int height = 720, frames = 1;
+    double seek = 0.0;
+    for (size_t i = 3; i < args.size(); ++i) {
+      std::string v;
+      if      (parse_kv(args[i], "height", &v)) { try { height = std::stoi(v); } catch (...) {} }
+      else if (parse_kv(args[i], "seek",   &v)) { try { seek   = std::stod(v); } catch (...) {} }
+      else if (parse_kv(args[i], "frames", &v)) { try { frames = std::stoi(v); } catch (...) {} }
+      else { std::fprintf(stderr, "error: unknown argument '%s'\n", args[i].c_str()); return 2; }
+    }
+    return lathe::decode_probe(args[2], height, seek, frames);
+  }
+  if (cmd == "decode-server") {
+    if (args.size() < 3) {
+      std::fputs("error: decode-server requires <input>\n", stderr);
+      return 2;
+    }
+    int height = 720;
+    double start = 0.0;
+    bool audio = false;
+    for (size_t i = 3; i < args.size(); ++i) {
+      std::string v;
+      if      (parse_kv(args[i], "height", &v)) { try { height = std::stoi(v); } catch (...) {} }
+      else if (parse_kv(args[i], "start",  &v)) { try { start  = std::stod(v); } catch (...) {} }
+      else if (args[i] == "--audio") { audio = true; }
+      else { std::fprintf(stderr, "error: unknown argument '%s'\n", args[i].c_str()); return 2; }
+    }
+    return audio ? lathe::decode_server_audio(args[2], start)
+                 : lathe::decode_server(args[2], height, start);
   }
 
   // Pre-vendor-folder bootstraps left ffmpeg.exe next to the executable;
@@ -121,6 +165,78 @@ int run_cli(const std::vector<std::string>& args) {
     }
     bool frame_only = (cmd == "extract-frame");
     auto r = lathe::extract(args[2], args[3], frame_only);
+    switch (r) {
+      case lathe::ConvertResult::Ok:               return 0;
+      case lathe::ConvertResult::Cancelled:        return 130;
+      case lathe::ConvertResult::InputNotFound:    return 1;
+      case lathe::ConvertResult::FfmpegFailed:     return 1;
+      case lathe::ConvertResult::BootstrapFailed:  return 1;
+    }
+    return 1;
+  }
+
+  if (cmd == "stream-frames") {
+    if (args.size() < 3) {
+      std::fputs("error: stream-frames requires <input>\n", stderr);
+      return 2;
+    }
+    lathe::ConvertOptions opts;
+    for (size_t i = 3; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      if      (parse_kv(a, "max-height", &opts.max_height)) continue;
+      else if (parse_kv(a, "height",     &opts.max_height)) continue;  // alias
+      else if (parse_kv(a, "fps",        &opts.fps))        continue;
+      else if (parse_kv(a, "start",      &opts.start))      continue;
+      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+      return 2;
+    }
+    auto r = lathe::stream_frames(args[2], opts);
+    switch (r) {
+      case lathe::ConvertResult::Ok:               return 0;
+      case lathe::ConvertResult::Cancelled:        return 130;
+      case lathe::ConvertResult::InputNotFound:    return 1;
+      case lathe::ConvertResult::FfmpegFailed:     return 1;
+      case lathe::ConvertResult::BootstrapFailed:  return 1;
+    }
+    return 1;
+  }
+
+  if (cmd == "stream-audio") {
+    if (args.size() < 3) {
+      std::fputs("error: stream-audio requires <input>\n", stderr);
+      return 2;
+    }
+    lathe::ConvertOptions opts;
+    for (size_t i = 3; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      if (parse_kv(a, "start", &opts.start)) continue;
+      std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
+      return 2;
+    }
+    auto r = lathe::stream_audio(args[2], opts);
+    switch (r) {
+      case lathe::ConvertResult::Ok:               return 0;
+      case lathe::ConvertResult::Cancelled:        return 130;
+      case lathe::ConvertResult::InputNotFound:    return 1;
+      case lathe::ConvertResult::FfmpegFailed:     return 1;
+      case lathe::ConvertResult::BootstrapFailed:  return 1;
+    }
+    return 1;
+  }
+
+  if (cmd == "audio-peaks") {
+    if (args.size() < 3) {
+      std::fputs("error: audio-peaks requires <input>\n", stderr);
+      return 2;
+    }
+    int bins = 2000;
+    for (size_t i = 3; i < args.size(); ++i) {
+      std::string v;
+      if (parse_kv(args[i], "bins", &v)) { try { bins = std::stoi(v); } catch (...) {} continue; }
+      std::fprintf(stderr, "error: unknown argument '%s'\n", args[i].c_str());
+      return 2;
+    }
+    auto r = lathe::audio_peaks(args[2], bins);
     switch (r) {
       case lathe::ConvertResult::Ok:               return 0;
       case lathe::ConvertResult::Cancelled:        return 130;
