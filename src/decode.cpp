@@ -174,6 +174,7 @@ struct CtlCtx {
   std::atomic<int>* dirReq;        // playback direction riding the seek op (1 / -1)
   std::atomic<double>* loopIn;     // gapless loop region; loopOut <= loopIn = off
   std::atomic<double>* loopOut;
+  std::atomic<bool>* tonemap;      // HDR→SDR tone-mapping (video server only)
 };
 
 // Reads JSON-line commands on stdin and drives the atomics. Runs on its own
@@ -197,6 +198,7 @@ void ctl_loop(CtlCtx* c) {
           c->loopIn->store(cmd_num(line, "in", 0.0));
           c->loopOut->store(cmd_num(line, "out", 0.0));
         }
+        else if (cmd_is(line, "tonemap")) c->tonemap->store(cmd_num(line, "on", 1.0) != 0.0);
         else if (cmd_is(line, "pause")) c->paused->store(true);
         else if (cmd_is(line, "play")) c->paused->store(false);
         line.clear();
@@ -227,6 +229,39 @@ enum AVPixelFormat hw_get_format(AVCodecContext*, const enum AVPixelFormat* fmts
     if (*p == AV_PIX_FMT_D3D11) return *p;
   }
   return fmts[0];
+}
+
+// HDR→SDR tone-mapping LUT: 16-bit nonlinear code value → 8-bit display gamma.
+// Per-channel after the (BT.2020) YUV→RGB conversion at 16-bit — primaries
+// stay 2020 (slight saturation shift on extreme colors), which is the right
+// cost/quality trade for a preview toggle. PQ: ST.2084 EOTF → reference-white
+// 203 nits → extended-Reinhard toward a 1000-nit peak → 2.2 gamma. HLG:
+// inverse OETF → 1.2 system gamma → same.
+std::vector<uint8_t> build_tonemap_lut(int hdrKind /* 1=pq 2=hlg */) {
+  std::vector<uint8_t> lut(65536);
+  const double Lw = 1000.0 / 203.0;  // peak in reference-white units
+  for (int i = 0; i < 65536; i++) {
+    const double e = i / 65535.0;
+    double L;  // linear light, 1.0 = reference white (203 nits)
+    if (hdrKind == 1) {
+      const double m1 = 0.1593017578125, m2 = 78.84375;
+      const double c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+      const double p = std::pow(e, 1.0 / m2);
+      const double num = p - c1 > 0.0 ? p - c1 : 0.0;
+      const double Y = std::pow(num / (c2 - c3 * p), 1.0 / m1);  // 0..1 = 0..10000 nits
+      L = Y * 10000.0 / 203.0;
+    } else {
+      const double a = 0.17883277, b = 0.28466892, c = 0.55991073;
+      const double scene = e <= 0.5 ? (e * e) / 3.0 : (std::exp((e - c) / a) + b) / 12.0;
+      const double display = std::pow(scene, 1.2);  // HLG system gamma
+      L = display * 1000.0 / 203.0;
+    }
+    double t = L * (1.0 + L / (Lw * Lw)) / (1.0 + L);  // extended Reinhard
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+    lut[i] = static_cast<uint8_t>(std::lround(std::pow(t, 1.0 / 2.2) * 255.0));
+  }
+  return lut;
 }
 
 // Match the YUV→RGB matrix to the content: the tagged colorspace when present,
@@ -365,22 +400,33 @@ int decode_server(const std::string& input, int height, double start_sec) {
   const double dur = (fmt->duration > 0) ? static_cast<double>(fmt->duration) / AV_TIME_BASE : 0.0;
   const double fps = st->avg_frame_rate.num > 0 ? av_q2d(st->avg_frame_rate) : 30.0;
 
+  // HDR detection (PQ / HLG transfer): reported in the geometry so the GUI can
+  // offer the tone-map toggle; tone-mapping defaults ON for HDR sources (the
+  // raw transfer curve looks washed-out flat on an SDR canvas).
+  const int hdrKind = dec->color_trc == AVCOL_TRC_SMPTE2084     ? 1
+                      : dec->color_trc == AVCOL_TRC_ARIB_STD_B67 ? 2
+                                                                  : 0;
+
   // The scaler is built lazily off the FIRST decoded frame's actual format:
   // with d3d11va the frames arrive as NV12 after the GPU→CPU transfer, not the
   // container-declared pix_fmt.
   SwsContext* sws = nullptr;
   int swsFmt = AV_PIX_FMT_NONE;
+  bool swsTm = false;
   AVFrame* frame = av_frame_alloc();
   AVFrame* hwsw = av_frame_alloc();   // GPU frame downloaded to system memory
   AVFrame* rgba = av_frame_alloc();
   rgba->format = AV_PIX_FMT_RGBA; rgba->width = pW; rgba->height = pH;
   av_frame_get_buffer(rgba, 0);
+  AVFrame* rgba64 = nullptr;          // 16-bit staging for the tone-map path
+  std::vector<uint8_t> tmLut;
   AVPacket* pkt = av_packet_alloc();
   const uint32_t frameBytes = static_cast<uint32_t>(oW) * oH * 4;
   std::vector<uint8_t> rotBuf(rot != 0 ? frameBytes : 0);
 
-  std::fprintf(stderr, "WAVDESK_GEOM w=%d h=%d fps=%d dur=%.3f pix_fmt=rgba\n",
-               oW, oH, static_cast<int>(std::lround(fps)), dur);
+  std::fprintf(stderr, "WAVDESK_GEOM w=%d h=%d fps=%d dur=%.3f pix_fmt=rgba hdr=%s\n",
+               oW, oH, static_cast<int>(std::lround(fps)), dur,
+               hdrKind == 1 ? "pq" : hdrKind == 2 ? "hlg" : "0");
   std::fflush(stderr);
 
   // Control thread: JSON-line commands on stdin (seek/pause/play/close). Detached
@@ -391,7 +437,8 @@ int decode_server(const std::string& input, int height, double start_sec) {
   std::atomic<int> dirReq{1};
   std::atomic<double> loopIn{0.0};
   std::atomic<double> loopOut{0.0};
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut };
+  std::atomic<bool> tonemap{hdrKind != 0};  // default ON for HDR sources
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut, &tonemap };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -408,9 +455,11 @@ int decode_server(const std::string& input, int height, double start_sec) {
   int dirState = 1;         // 1 = forward, -1 = reverse (backward-GOP chunks)
   double revHead = 0.0;     // reverse playback position (descending)
 
-  // Scale (+ rotate) the decoded frame into `out` (frameBytes). Downloads a
-  // GPU (d3d11va) frame to system memory first, and (re)builds the scaler off
-  // the frame's true format. False = skip this frame (transfer/scaler hiccup).
+  // Scale (+ rotate, + tone-map) the decoded frame into `out` (frameBytes).
+  // Downloads a GPU (d3d11va) frame to system memory first, and (re)builds the
+  // scaler off the frame's true format and the tone-map state. With tone-
+  // mapping the scale lands in 16-bit RGBA and a per-channel LUT folds the
+  // PQ/HLG transfer down to display gamma. False = skip this frame.
   bool hwAnnounced = false;
   auto render_frame = [&](uint8_t* out) -> bool {
     AVFrame* src = frame;
@@ -424,15 +473,40 @@ int decode_server(const std::string& input, int height, double start_sec) {
       if (av_hwframe_transfer_data(hwsw, frame, 0) < 0) return false;
       src = hwsw;
     }
-    if (!sws || swsFmt != src->format) {
+    const bool tm = hdrKind != 0 && tonemap.load();
+    if (!sws || swsFmt != src->format || swsTm != tm) {
       if (sws) sws_freeContext(sws);
       sws = sws_getContext(srcW, srcH, static_cast<enum AVPixelFormat>(src->format),
-                           pW, pH, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                           pW, pH, tm ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_RGBA,
+                           SWS_BILINEAR, nullptr, nullptr, nullptr);
       if (!sws) return false;
       set_sws_colorspace(sws, dec, srcH);
       swsFmt = src->format;
+      swsTm = tm;
     }
-    sws_scale(sws, src->data, src->linesize, 0, srcH, rgba->data, rgba->linesize);
+    if (tm) {
+      if (!rgba64) {
+        rgba64 = av_frame_alloc();
+        rgba64->format = AV_PIX_FMT_RGBA64LE; rgba64->width = pW; rgba64->height = pH;
+        if (av_frame_get_buffer(rgba64, 0) < 0) { av_frame_free(&rgba64); return false; }
+      }
+      if (tmLut.empty()) tmLut = build_tonemap_lut(hdrKind);
+      sws_scale(sws, src->data, src->linesize, 0, srcH, rgba64->data, rgba64->linesize);
+      for (int y = 0; y < pH; y++) {
+        const uint16_t* sp = reinterpret_cast<const uint16_t*>(
+            rgba64->data[0] + static_cast<size_t>(y) * rgba64->linesize[0]);
+        uint8_t* dp = rgba->data[0] + static_cast<size_t>(y) * rgba->linesize[0];
+        for (int x = 0; x < pW; x++) {
+          dp[0] = tmLut[sp[0]];
+          dp[1] = tmLut[sp[1]];
+          dp[2] = tmLut[sp[2]];
+          dp[3] = 255;
+          sp += 4; dp += 4;
+        }
+      }
+    } else {
+      sws_scale(sws, src->data, src->linesize, 0, srcH, rgba->data, rgba->linesize);
+    }
     if (rot != 0) {
       rotate_rgba(rgba->data[0], rgba->linesize[0], pW, pH, out, rot);
     } else {
@@ -628,6 +702,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
 #endif
   av_packet_free(&pkt);
   av_frame_free(&rgba);
+  if (rgba64) av_frame_free(&rgba64);
   av_frame_free(&hwsw);
   av_frame_free(&frame);
   if (sws) sws_freeContext(sws);
@@ -703,7 +778,8 @@ int decode_server_audio(const std::string& input, double start_sec) {
   std::atomic<int> dirReq{1};
   std::atomic<double> loopIn{0.0};
   std::atomic<double> loopOut{0.0};
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut };
+  std::atomic<bool> tonemapUnused{false};  // video-only op; absorbed here
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut, &tonemapUnused };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
