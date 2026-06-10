@@ -1,5 +1,6 @@
 #include "bootstrap.h"
 #include "convert.h"
+#include "libav.h"
 #include "paths.h"
 #include "process.h"
 
@@ -74,6 +75,10 @@ int run_cli(const std::vector<std::string>& args) {
   if (cmd == "--help" || cmd == "-h") return print_help();
   if (cmd == "--version" || cmd == "-v") {
     std::puts("lathe 0.2.0");
+    return 0;
+  }
+  if (cmd == "libav-version") {
+    std::fputs(lathe::libav_versions().c_str(), stdout);
     return 0;
   }
 

@@ -12,3 +12,4 @@ CMakeUserPresets.json
 # locally; CMake POST_BUILD copies it next to the lathe executable.
 binaries/
 test_data/
+third_party/
