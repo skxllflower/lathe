@@ -332,6 +332,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
 
   double dropUntil = -1.0;  // frame-accurate seek: drop frames before this time
   bool eof = false;
+  bool drained = false;     // EOF flush packet sent (reset by seek)
   bool oneShot = false;     // chase the exact target frame after a seek even
                             // while paused, so a paused scrub still lands
   bool preview = false;     // surface the first decoded frame during catch-up
@@ -352,6 +353,35 @@ int decode_server(const std::string& input, int height, double start_sec) {
     return true;
   };
 
+  // Emit everything the decoder has ready. Shared by the normal per-packet
+  // path and the EOF drain.
+  auto pump_decoded = [&]() {
+    while (avcodec_receive_frame(dec, frame) >= 0) {
+      const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                            ? frame->best_effort_timestamp * av_q2d(st->time_base)
+                            : 0.0;
+      if (dropUntil >= 0.0 && ft < dropUntil - 0.001) {
+        // Long-GOP catch-up takes a beat even multithreaded: ship the FIRST
+        // decoded (keyframe-adjacent) frame instantly so a scrub shows
+        // nearby content while the exact target frame is chased down. It
+        // doesn't clear oneShot — the chase continues through a pause.
+        if (preview) {
+          preview = false;
+          if (!emit_frame(ft)) { wantClose.store(true); break; }
+        }
+        continue;
+      }
+      dropUntil = -1.0;
+      preview = false;
+      if (!emit_frame(ft)) { wantClose.store(true); break; }
+      oneShot = false;
+      // Stay responsive mid-packet. Don't break on pause here: abandoning a
+      // half-drained packet makes the next send_packet EAGAIN-fail and drops
+      // a frame on resume; the outer loop gates further packets instead.
+      if (wantClose.load() || seekReq.load() >= 0.0) break;
+    }
+  };
+
   if (start_sec > 0.0) {
     const int64_t ts = static_cast<int64_t>(start_sec / av_q2d(st->time_base));
     av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
@@ -367,6 +397,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
       avcodec_flush_buffers(dec);
       dropUntil = sk;
       eof = false;
+      drained = false;  // flush_buffers re-arms a drained decoder
       oneShot = true;
       preview = true;
       if (!write_chunk_header(sk, 0)) break;  // seek marker
@@ -376,32 +407,21 @@ int decode_server(const std::string& input, int height, double start_sec) {
       sleep_ms(8);
       continue;
     }
-    if (av_read_frame(fmt, pkt) < 0) { eof = true; continue; }
-    if (pkt->stream_index == vs && avcodec_send_packet(dec, pkt) >= 0) {
-      while (avcodec_receive_frame(dec, frame) >= 0) {
-        const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                              ? frame->best_effort_timestamp * av_q2d(st->time_base)
-                              : 0.0;
-        if (dropUntil >= 0.0 && ft < dropUntil - 0.001) {
-          // Long-GOP catch-up takes a beat even multithreaded: ship the FIRST
-          // decoded (keyframe-adjacent) frame instantly so a scrub shows
-          // nearby content while the exact target frame is chased down. It
-          // doesn't clear oneShot — the chase continues through a pause.
-          if (preview) {
-            preview = false;
-            if (!emit_frame(ft)) { wantClose.store(true); break; }
-          }
-          continue;
-        }
-        dropUntil = -1.0;
-        preview = false;
-        if (!emit_frame(ft)) { wantClose.store(true); break; }
-        oneShot = false;
-        // Stay responsive mid-packet. Don't break on pause here: abandoning a
-        // half-drained packet makes the next send_packet EAGAIN-fail and drops
-        // a frame on resume; the outer loop gates further packets instead.
-        if (wantClose.load() || seekReq.load() >= 0.0) break;
+    if (av_read_frame(fmt, pkt) < 0) {
+      // End of stream: DRAIN the decoder before idling. Frame-threaded decode
+      // buffers ~thread_count frames internally — without the flush packet, a
+      // video shorter than the pipeline emits NOTHING at all, and every file
+      // silently loses its tail.
+      if (!drained) {
+        drained = true;
+        avcodec_send_packet(dec, nullptr);
+        pump_decoded();
       }
+      eof = true;
+      continue;
+    }
+    if (pkt->stream_index == vs && avcodec_send_packet(dec, pkt) >= 0) {
+      pump_decoded();
     }
     av_packet_unref(pkt);
   }
@@ -492,6 +512,7 @@ int decode_server_audio(const std::string& input, double start_sec) {
 
   double dropUntil = -1.0;
   bool eof = false;
+  bool drained = false;  // EOF flush packet sent (reset by seek)
   auto do_seek = [&](double t) {
     const int64_t ts = static_cast<int64_t>(t / av_q2d(st->time_base));
     av_seek_frame(fmt, as, ts, AVSEEK_FLAG_BACKWARD);
@@ -499,7 +520,41 @@ int decode_server_audio(const std::string& input, double start_sec) {
     swr_make();  // drop resampler history from the old position
     dropUntil = t;
     eof = false;
+    drained = false;
   };
+
+  auto pump_decoded = [&]() {
+    while (avcodec_receive_frame(dec, frame) >= 0) {
+      const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                            ? frame->best_effort_timestamp * av_q2d(st->time_base)
+                            : 0.0;
+      // Drop whole frames that END before the seek target; the straddling
+      // frame is kept intact — its true PTS is what the daemon rebases on.
+      if (dropUntil >= 0.0 && dec->sample_rate > 0 &&
+          ft + static_cast<double>(frame->nb_samples) / dec->sample_rate < dropUntil - 0.001) {
+        continue;
+      }
+      dropUntil = -1.0;
+      const int outCap = static_cast<int>(av_rescale_rnd(
+          swr_get_delay(swr, dec->sample_rate) + frame->nb_samples, outSr,
+          dec->sample_rate, AV_ROUND_UP)) + 64;
+      outBuf.resize(static_cast<size_t>(outCap) * outCh);
+      uint8_t* outPlanes[1] = { reinterpret_cast<uint8_t*>(outBuf.data()) };
+      const int got = swr_convert(swr, outPlanes, outCap,
+                                  const_cast<const uint8_t**>(frame->extended_data),
+                                  frame->nb_samples);
+      if (got <= 0) continue;
+      const uint32_t bytes = static_cast<uint32_t>(got) * outCh * sizeof(float);
+      if (!write_chunk_header(ft, bytes) ||
+          std::fwrite(outBuf.data(), 1, bytes, stdout) != bytes) {
+        wantClose.store(true);
+        break;
+      }
+      std::fflush(stdout);  // backpressure paces the decode
+      if (wantClose.load() || seekReq.load() >= 0.0) break;
+    }
+  };
+
   if (start_sec > 0.0) do_seek(start_sec);  // stream BEGINS here — no marker
 
   while (!wantClose.load()) {
@@ -515,37 +570,18 @@ int decode_server_audio(const std::string& input, double start_sec) {
       sleep_ms(8);
       continue;
     }
-    if (av_read_frame(fmt, pkt) < 0) { eof = true; continue; }
-    if (pkt->stream_index == as && avcodec_send_packet(dec, pkt) >= 0) {
-      while (avcodec_receive_frame(dec, frame) >= 0) {
-        const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
-                              ? frame->best_effort_timestamp * av_q2d(st->time_base)
-                              : 0.0;
-        // Drop whole frames that END before the seek target; the straddling
-        // frame is kept intact — its true PTS is what the daemon rebases on.
-        if (dropUntil >= 0.0 && dec->sample_rate > 0 &&
-            ft + static_cast<double>(frame->nb_samples) / dec->sample_rate < dropUntil - 0.001) {
-          continue;
-        }
-        dropUntil = -1.0;
-        const int outCap = static_cast<int>(av_rescale_rnd(
-            swr_get_delay(swr, dec->sample_rate) + frame->nb_samples, outSr,
-            dec->sample_rate, AV_ROUND_UP)) + 64;
-        outBuf.resize(static_cast<size_t>(outCap) * outCh);
-        uint8_t* outPlanes[1] = { reinterpret_cast<uint8_t*>(outBuf.data()) };
-        const int got = swr_convert(swr, outPlanes, outCap,
-                                    const_cast<const uint8_t**>(frame->extended_data),
-                                    frame->nb_samples);
-        if (got <= 0) continue;
-        const uint32_t bytes = static_cast<uint32_t>(got) * outCh * sizeof(float);
-        if (!write_chunk_header(ft, bytes) ||
-            std::fwrite(outBuf.data(), 1, bytes, stdout) != bytes) {
-          wantClose.store(true);
-          break;
-        }
-        std::fflush(stdout);  // backpressure paces the decode
-        if (wantClose.load() || seekReq.load() >= 0.0) break;
+    if (av_read_frame(fmt, pkt) < 0) {
+      // Drain decoder-buffered tail samples before idling (see video twin).
+      if (!drained) {
+        drained = true;
+        avcodec_send_packet(dec, nullptr);
+        pump_decoded();
       }
+      eof = true;
+      continue;
+    }
+    if (pkt->stream_index == as && avcodec_send_packet(dec, pkt) >= 0) {
+      pump_decoded();
     }
     av_packet_unref(pkt);
   }
