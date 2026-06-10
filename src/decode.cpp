@@ -31,6 +31,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/display.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
 #include <libswresample/swresample.h>
@@ -140,12 +141,16 @@ int decode_probe(const std::string& input, int height, double seek_sec, int nfra
 //   [8-byte LE u64 pts in MICROSECONDS][4-byte LE u32 payload length][payload]
 // Video payload = one scaled RGBA frame (w*h*4 bytes, constant per stream).
 // Audio payload = interleaved f32le PCM (variable length).
-// A ZERO-length chunk is a SEEK MARKER: everything before it in the stream
-// predates the seek, everything after is from the new position. Consumers
-// flush their buffers at the marker — that's what makes in-process seek
-// glitch-proof even with stale data still in flight in the pipes (PTS alone
-// can't distinguish stale from fresh on a backward seek).
+// Two payload-less marker forms:
+//   len == 0          SEEK MARKER — everything before it predates the seek;
+//                     consumers FLUSH their buffers (PTS alone can't split
+//                     stale from fresh on a backward seek).
+//   len == 0xFFFFFFFF WRAP MARKER — a gapless loop wrapped to pts; pure
+//                     continuity, consumers REBASE position bookkeeping but
+//                     must NOT flush (the buffered tail still plays).
 namespace {
+
+constexpr uint32_t kWrapMarkerLen = 0xFFFFFFFFu;
 
 double cmd_num(const std::string& s, const char* key, double def) {
   const std::string k = std::string("\"") + key + "\"";
@@ -166,7 +171,9 @@ struct CtlCtx {
   std::atomic<bool>* wantClose;
   std::atomic<bool>* paused;
   std::atomic<double>* seekReq;
-  std::atomic<int>* dirReq;   // playback direction riding the seek op (1 / -1)
+  std::atomic<int>* dirReq;        // playback direction riding the seek op (1 / -1)
+  std::atomic<double>* loopIn;     // gapless loop region; loopOut <= loopIn = off
+  std::atomic<double>* loopOut;
 };
 
 // Reads JSON-line commands on stdin and drives the atomics. Runs on its own
@@ -183,6 +190,12 @@ void ctl_loop(CtlCtx* c) {
           // the new seek with the old direction.
           c->dirReq->store(cmd_num(line, "dir", 1.0) < 0 ? -1 : 1);
           c->seekReq->store(cmd_num(line, "sec", 0.0));
+        }
+        else if (cmd_is(line, "loop")) {
+          // In lands before out: a torn read sees out<=in (= loop off) rather
+          // than a bogus region.
+          c->loopIn->store(cmd_num(line, "in", 0.0));
+          c->loopOut->store(cmd_num(line, "out", 0.0));
         }
         else if (cmd_is(line, "pause")) c->paused->store(true);
         else if (cmd_is(line, "play")) c->paused->store(false);
@@ -205,6 +218,35 @@ bool write_chunk_header(double pts_sec, uint32_t payload_bytes) {
   std::memcpy(hdr, &pts_us, 8);                 // x86/x64: already LE
   std::memcpy(hdr + 8, &payload_bytes, 4);
   return std::fwrite(hdr, 1, sizeof(hdr), stdout) == sizeof(hdr);
+}
+
+// Prefer D3D11 surfaces when the decoder offers them; anything else falls
+// back to the first (software) format and decode proceeds on the CPU.
+enum AVPixelFormat hw_get_format(AVCodecContext*, const enum AVPixelFormat* fmts) {
+  for (const enum AVPixelFormat* p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
+    if (*p == AV_PIX_FMT_D3D11) return *p;
+  }
+  return fmts[0];
+}
+
+// Match the YUV→RGB matrix to the content: the tagged colorspace when present,
+// else the HD/SD heuristic (BT.709 at ≥720p). swscale otherwise defaults to
+// BT.601 coefficients, which visibly shifts hues on HD content — Chromium got
+// this right, so the native path must too.
+void set_sws_colorspace(SwsContext* sws, const AVCodecContext* dec, int srcH) {
+  int spc;
+  switch (dec->colorspace) {
+    case AVCOL_SPC_BT709:      spc = SWS_CS_ITU709; break;
+    case AVCOL_SPC_BT470BG:
+    case AVCOL_SPC_SMPTE170M:  spc = SWS_CS_ITU601; break;
+    case AVCOL_SPC_BT2020_NCL:
+    case AVCOL_SPC_BT2020_CL:  spc = SWS_CS_BT2020; break;
+    default:                   spc = srcH >= 720 ? SWS_CS_ITU709 : SWS_CS_ITU601; break;
+  }
+  const int srcRange = dec->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+  sws_setColorspaceDetails(sws, sws_getCoefficients(spc), srcRange,
+                           sws_getCoefficients(SWS_CS_DEFAULT), 1 /* full-range RGB out */,
+                           0, 1 << 16, 1 << 16);
 }
 
 // Clockwise display rotation (0/90/180/270) from the stream's display-matrix
@@ -277,6 +319,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
   AVStream* st = fmt->streams[vs];
   const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
   AVCodecContext* dec = codec ? avcodec_alloc_context3(codec) : nullptr;
+  AVBufferRef* hwdev = nullptr;
   bool dec_ok = dec && avcodec_parameters_to_context(dec, st->codecpar) >= 0;
   if (dec_ok) {
     // Multithreaded decode. The default is ONE thread, which made 4K H.264
@@ -285,11 +328,21 @@ int decode_server(const std::string& input, int height, double start_sec) {
     dec->thread_count = 0;  // auto (core count)
     dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     dec->flags2 |= AV_CODEC_FLAG2_FAST;
+    // Hardware decode (d3d11va) when the GPU offers it — the laptop-battery
+    // path <video> used to provide. get_format picks D3D11 surfaces only when
+    // the decoder lists them, so unsupported codecs/GPUs silently stay on the
+    // (still multithreaded) software path; frames transfer to system memory
+    // per frame in render_frame.
+    if (av_hwdevice_ctx_create(&hwdev, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) >= 0) {
+      dec->hw_device_ctx = av_buffer_ref(hwdev);
+      dec->get_format = hw_get_format;
+    }
     dec_ok = avcodec_open2(dec, codec, nullptr) >= 0;
   }
   if (!dec_ok) {
     std::fprintf(stderr, "decode-server: codec open failed\n");
     if (dec) avcodec_free_context(&dec);
+    if (hwdev) av_buffer_unref(&hwdev);
     avformat_close_input(&fmt);
     return 1;
   }
@@ -312,9 +365,13 @@ int decode_server(const std::string& input, int height, double start_sec) {
   const double dur = (fmt->duration > 0) ? static_cast<double>(fmt->duration) / AV_TIME_BASE : 0.0;
   const double fps = st->avg_frame_rate.num > 0 ? av_q2d(st->avg_frame_rate) : 30.0;
 
-  SwsContext* sws = sws_getContext(srcW, srcH, dec->pix_fmt, pW, pH, AV_PIX_FMT_RGBA,
-                                   SWS_BILINEAR, nullptr, nullptr, nullptr);
+  // The scaler is built lazily off the FIRST decoded frame's actual format:
+  // with d3d11va the frames arrive as NV12 after the GPU→CPU transfer, not the
+  // container-declared pix_fmt.
+  SwsContext* sws = nullptr;
+  int swsFmt = AV_PIX_FMT_NONE;
   AVFrame* frame = av_frame_alloc();
+  AVFrame* hwsw = av_frame_alloc();   // GPU frame downloaded to system memory
   AVFrame* rgba = av_frame_alloc();
   rgba->format = AV_PIX_FMT_RGBA; rgba->width = pW; rgba->height = pH;
   av_frame_get_buffer(rgba, 0);
@@ -332,7 +389,9 @@ int decode_server(const std::string& input, int height, double start_sec) {
   std::atomic<bool> paused{false};
   std::atomic<double> seekReq{-1.0};
   std::atomic<int> dirReq{1};
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq };
+  std::atomic<double> loopIn{0.0};
+  std::atomic<double> loopOut{0.0};
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -345,12 +404,35 @@ int decode_server(const std::string& input, int height, double start_sec) {
   bool oneShot = false;     // chase the exact target frame after a seek even
                             // while paused, so a paused scrub still lands
   bool preview = false;     // surface the first decoded frame during catch-up
+  bool wrapReq = false;     // gapless loop: jump back to the in-point next
   int dirState = 1;         // 1 = forward, -1 = reverse (backward-GOP chunks)
   double revHead = 0.0;     // reverse playback position (descending)
 
-  // Scale (+ rotate) the decoded frame into `out` (frameBytes).
-  auto render_frame = [&](uint8_t* out) {
-    sws_scale(sws, frame->data, frame->linesize, 0, srcH, rgba->data, rgba->linesize);
+  // Scale (+ rotate) the decoded frame into `out` (frameBytes). Downloads a
+  // GPU (d3d11va) frame to system memory first, and (re)builds the scaler off
+  // the frame's true format. False = skip this frame (transfer/scaler hiccup).
+  bool hwAnnounced = false;
+  auto render_frame = [&](uint8_t* out) -> bool {
+    AVFrame* src = frame;
+    if (frame->format == AV_PIX_FMT_D3D11) {
+      if (!hwAnnounced) {
+        hwAnnounced = true;
+        std::fprintf(stderr, "decode-server: d3d11va hardware decode active\n");
+        std::fflush(stderr);
+      }
+      av_frame_unref(hwsw);
+      if (av_hwframe_transfer_data(hwsw, frame, 0) < 0) return false;
+      src = hwsw;
+    }
+    if (!sws || swsFmt != src->format) {
+      if (sws) sws_freeContext(sws);
+      sws = sws_getContext(srcW, srcH, static_cast<enum AVPixelFormat>(src->format),
+                           pW, pH, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+      if (!sws) return false;
+      set_sws_colorspace(sws, dec, srcH);
+      swsFmt = src->format;
+    }
+    sws_scale(sws, src->data, src->linesize, 0, srcH, rgba->data, rgba->linesize);
     if (rot != 0) {
       rotate_rgba(rgba->data[0], rgba->linesize[0], pW, pH, out, rot);
     } else {
@@ -360,6 +442,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
                     static_cast<size_t>(oW) * 4);
       }
     }
+    return true;
   };
   std::vector<uint8_t> scratch(frameBytes);
   auto write_frame = [&](double ft, const uint8_t* data) -> bool {
@@ -369,7 +452,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
     return true;
   };
   auto emit_frame = [&](double ft) -> bool {
-    render_frame(scratch.data());
+    if (!render_frame(scratch.data())) return true;  // bad frame — skip, keep streaming
     return write_frame(ft, scratch.data());
   };
 
@@ -395,6 +478,14 @@ int decode_server(const std::string& input, int height, double start_sec) {
       preview = false;
       if (!emit_frame(ft)) { wantClose.store(true); break; }
       oneShot = false;
+      // Gapless loop: this frame reached the out-point — wrap to the in-point
+      // (handled in the outer loop; the emitted stream stays continuous).
+      const double lIn = loopIn.load(), lOut = loopOut.load();
+      if (dirState > 0 && lOut > lIn + 0.01 &&
+          ft >= lOut - 0.5 / (fps > 1.0 ? fps : 30.0)) {
+        wrapReq = true;
+        break;
+      }
       // Stay responsive mid-packet. Don't break on pause here: abandoning a
       // half-drained packet makes the next send_packet EAGAIN-fail and drops
       // a frame on resume; the outer loop gates further packets instead.
@@ -435,7 +526,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
                               : 0.0;
         if (ft >= chunkEnd - 0.0005) { past = true; continue; }
         std::vector<uint8_t> buf(frameBytes);
-        render_frame(buf.data());
+        if (!render_frame(buf.data())) continue;
         kept.emplace_back(ft, std::move(buf));
         if (kept.size() > maxKeep) kept.pop_front();
       }
@@ -501,13 +592,33 @@ int decode_server(const std::string& input, int height, double start_sec) {
         avcodec_send_packet(dec, nullptr);
         pump_decoded();
       }
-      eof = true;
-      continue;
+      // A loop region whose out-point sits at/past the end wraps from EOF.
+      if (!wrapReq && dirState > 0 && loopOut.load() > loopIn.load() + 0.01) {
+        wrapReq = true;
+      }
+      if (!wrapReq) {
+        eof = true;
+        continue;
+      }
+    } else {
+      if (pkt->stream_index == vs && avcodec_send_packet(dec, pkt) >= 0) {
+        pump_decoded();
+      }
+      av_packet_unref(pkt);
     }
-    if (pkt->stream_index == vs && avcodec_send_packet(dec, pkt) >= 0) {
-      pump_decoded();
+    if (wrapReq) {
+      // Gapless loop wrap: jump back to the in-point IN-PROCESS with no
+      // marker — the emitted stream stays continuous (frames carry their
+      // pts) while the consumer plays out its buffered tail.
+      wrapReq = false;
+      const double lIn = loopIn.load();
+      av_seek_frame(fmt, vs, static_cast<int64_t>(lIn / av_q2d(st->time_base)),
+                    AVSEEK_FLAG_BACKWARD);
+      avcodec_flush_buffers(dec);
+      dropUntil = lIn;
+      drained = false;
+      eof = false;
     }
-    av_packet_unref(pkt);
   }
 
 #ifdef _WIN32
@@ -517,9 +628,11 @@ int decode_server(const std::string& input, int height, double start_sec) {
 #endif
   av_packet_free(&pkt);
   av_frame_free(&rgba);
+  av_frame_free(&hwsw);
   av_frame_free(&frame);
-  sws_freeContext(sws);
+  if (sws) sws_freeContext(sws);
   avcodec_free_context(&dec);
+  if (hwdev) av_buffer_unref(&hwdev);
   avformat_close_input(&fmt);
   return 0;
 }
@@ -588,7 +701,9 @@ int decode_server_audio(const std::string& input, double start_sec) {
   std::atomic<bool> paused{false};
   std::atomic<double> seekReq{-1.0};
   std::atomic<int> dirReq{1};
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq };
+  std::atomic<double> loopIn{0.0};
+  std::atomic<double> loopOut{0.0};
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -597,9 +712,11 @@ int decode_server_audio(const std::string& input, double start_sec) {
 
   double dropUntil = -1.0;
   bool eof = false;
-  bool drained = false;  // EOF flush packet sent (reset by seek)
-  int dirState = 1;      // 1 = forward, -1 = reverse (sample-reversed chunks)
-  double revHead = 0.0;  // reverse playback position (descending)
+  bool drained = false;     // EOF flush packet sent (reset by seek)
+  bool wrapReq = false;     // gapless loop: jump back to the in-point next
+  double trimUntil = -1.0;  // sample-trim the straddling frame after a wrap
+  int dirState = 1;         // 1 = forward, -1 = reverse (sample-reversed chunks)
+  double revHead = 0.0;     // reverse playback position (descending)
   auto do_seek = [&](double t) {
     const int64_t ts = static_cast<int64_t>(t / av_q2d(st->time_base));
     av_seek_frame(fmt, as, ts, AVSEEK_FLAG_BACKWARD);
@@ -608,6 +725,8 @@ int decode_server_audio(const std::string& input, double start_sec) {
     dropUntil = t;
     eof = false;
     drained = false;
+    wrapReq = false;
+    trimUntil = -1.0;
   };
 
   // Reverse audio ("the quirk"): decode a short window ENDING at revHead
@@ -705,13 +824,44 @@ int decode_server_audio(const std::string& input, double start_sec) {
                                   const_cast<const uint8_t**>(frame->extended_data),
                                   frame->nb_samples);
       if (got <= 0) continue;
-      const uint32_t bytes = static_cast<uint32_t>(got) * outCh * sizeof(float);
-      if (!write_chunk_header(ft, bytes) ||
-          std::fwrite(outBuf.data(), 1, bytes, stdout) != bytes) {
-        wantClose.store(true);
-        break;
+
+      const float* data = outBuf.data();
+      int n = got;
+      double pts = ft;
+      // Loop wrap landed mid-frame: trim the leading samples so the loop body
+      // starts EXACTLY at the in-point (sample-accurate cycle length).
+      if (trimUntil >= 0.0) {
+        if (pts + static_cast<double>(n) / outSr <= trimUntil + 1e-9) continue;
+        if (pts < trimUntil) {
+          const int lead = static_cast<int>(std::llround((trimUntil - pts) * outSr));
+          if (lead >= n) continue;
+          data += static_cast<size_t>(lead) * outCh;
+          n -= lead;
+          pts = trimUntil;
+        }
+        trimUntil = -1.0;
       }
-      std::fflush(stdout);  // backpressure paces the decode
+      // Gapless loop: trim the chunk AT the out-point, then wrap.
+      const double lIn = loopIn.load(), lOut = loopOut.load();
+      const bool looping = dirState > 0 && lOut > lIn + 0.01;
+      bool wrap = false;
+      if (looping && pts >= lOut - 1e-9) {
+        n = 0;
+        wrap = true;
+      } else if (looping && pts + static_cast<double>(n) / outSr > lOut) {
+        n = static_cast<int>(std::llround((lOut - pts) * outSr));
+        wrap = true;
+      }
+      if (n > 0) {
+        const uint32_t bytes = static_cast<uint32_t>(n) * outCh * sizeof(float);
+        if (!write_chunk_header(pts, bytes) ||
+            std::fwrite(data, 1, bytes, stdout) != bytes) {
+          wantClose.store(true);
+          break;
+        }
+        std::fflush(stdout);  // backpressure paces the decode
+      }
+      if (wrap) { wrapReq = true; break; }
       if (wantClose.load() || seekReq.load() >= 0.0) break;
     }
   };
@@ -753,13 +903,30 @@ int decode_server_audio(const std::string& input, double start_sec) {
         avcodec_send_packet(dec, nullptr);
         pump_decoded();
       }
-      eof = true;
-      continue;
+      // A loop region whose out-point sits at/past the end wraps from EOF.
+      if (!wrapReq && dirState > 0 && loopOut.load() > loopIn.load() + 0.01) {
+        wrapReq = true;
+      }
+      if (!wrapReq) {
+        eof = true;
+        continue;
+      }
+    } else {
+      if (pkt->stream_index == as && avcodec_send_packet(dec, pkt) >= 0) {
+        pump_decoded();
+      }
+      av_packet_unref(pkt);
     }
-    if (pkt->stream_index == as && avcodec_send_packet(dec, pkt) >= 0) {
-      pump_decoded();
+    if (wrapReq) {
+      // Gapless loop wrap: tell the consumer (WRAP marker — rebase, don't
+      // flush), then jump to the in-point and sample-trim onto it.
+      wrapReq = false;
+      const double lIn = loopIn.load();
+      if (!write_chunk_header(lIn, kWrapMarkerLen)) break;
+      std::fflush(stdout);
+      do_seek(lIn);
+      trimUntil = lIn;
     }
-    av_packet_unref(pkt);
   }
 
 #ifdef _WIN32
