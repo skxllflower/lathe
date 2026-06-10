@@ -1,5 +1,6 @@
 #include "bootstrap.h"
 #include "convert.h"
+#include "decode.h"
 #include "libav.h"
 #include "paths.h"
 #include "process.h"
@@ -80,6 +81,22 @@ int run_cli(const std::vector<std::string>& args) {
   if (cmd == "libav-version") {
     std::fputs(lathe::libav_versions().c_str(), stdout);
     return 0;
+  }
+  if (cmd == "decode-probe") {
+    if (args.size() < 3) {
+      std::fputs("error: decode-probe requires <input>\n", stderr);
+      return 2;
+    }
+    int height = 720, frames = 1;
+    double seek = 0.0;
+    for (size_t i = 3; i < args.size(); ++i) {
+      std::string v;
+      if      (parse_kv(args[i], "height", &v)) { try { height = std::stoi(v); } catch (...) {} }
+      else if (parse_kv(args[i], "seek",   &v)) { try { seek   = std::stod(v); } catch (...) {} }
+      else if (parse_kv(args[i], "frames", &v)) { try { frames = std::stoi(v); } catch (...) {} }
+      else { std::fprintf(stderr, "error: unknown argument '%s'\n", args[i].c_str()); return 2; }
+    }
+    return lathe::decode_probe(args[2], height, seek, frames);
   }
 
   // Pre-vendor-folder bootstraps left ffmpeg.exe next to the executable;

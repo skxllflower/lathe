@@ -9,6 +9,7 @@ add_executable(lathe
   src/main.cpp
   src/bootstrap.cpp
   src/convert.cpp
+  src/decode.cpp
   src/download.cpp
   src/libav.cpp
   src/paths.cpp
