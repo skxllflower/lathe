@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -164,6 +166,7 @@ struct CtlCtx {
   std::atomic<bool>* wantClose;
   std::atomic<bool>* paused;
   std::atomic<double>* seekReq;
+  std::atomic<int>* dirReq;   // playback direction riding the seek op (1 / -1)
 };
 
 // Reads JSON-line commands on stdin and drives the atomics. Runs on its own
@@ -175,7 +178,12 @@ void ctl_loop(CtlCtx* c) {
     if (ch == '\n' || ch == '\r') {
       if (!line.empty()) {
         if (cmd_is(line, "close")) { c->wantClose->store(true); break; }
-        else if (cmd_is(line, "seek")) c->seekReq->store(cmd_num(line, "sec", 0.0));
+        else if (cmd_is(line, "seek")) {
+          // Direction lands BEFORE the seek time so the main loop can't see
+          // the new seek with the old direction.
+          c->dirReq->store(cmd_num(line, "dir", 1.0) < 0 ? -1 : 1);
+          c->seekReq->store(cmd_num(line, "sec", 0.0));
+        }
         else if (cmd_is(line, "pause")) c->paused->store(true);
         else if (cmd_is(line, "play")) c->paused->store(false);
         line.clear();
@@ -323,7 +331,8 @@ int decode_server(const std::string& input, int height, double start_sec) {
   std::atomic<bool> wantClose{false};
   std::atomic<bool> paused{false};
   std::atomic<double> seekReq{-1.0};
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq };
+  std::atomic<int> dirReq{1};
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -336,21 +345,32 @@ int decode_server(const std::string& input, int height, double start_sec) {
   bool oneShot = false;     // chase the exact target frame after a seek even
                             // while paused, so a paused scrub still lands
   bool preview = false;     // surface the first decoded frame during catch-up
+  int dirState = 1;         // 1 = forward, -1 = reverse (backward-GOP chunks)
+  double revHead = 0.0;     // reverse playback position (descending)
 
-  auto emit_frame = [&](double ft) -> bool {
+  // Scale (+ rotate) the decoded frame into `out` (frameBytes).
+  auto render_frame = [&](uint8_t* out) {
     sws_scale(sws, frame->data, frame->linesize, 0, srcH, rgba->data, rgba->linesize);
-    if (!write_chunk_header(ft, frameBytes)) return false;
     if (rot != 0) {
-      rotate_rgba(rgba->data[0], rgba->linesize[0], pW, pH, rotBuf.data(), rot);
-      if (std::fwrite(rotBuf.data(), 1, frameBytes, stdout) != frameBytes) return false;
+      rotate_rgba(rgba->data[0], rgba->linesize[0], pW, pH, out, rot);
     } else {
       for (int y = 0; y < oH; y++) {
-        std::fwrite(rgba->data[0] + static_cast<size_t>(y) * rgba->linesize[0], 1,
-                    static_cast<size_t>(oW) * 4, stdout);
+        std::memcpy(out + static_cast<size_t>(y) * oW * 4,
+                    rgba->data[0] + static_cast<size_t>(y) * rgba->linesize[0],
+                    static_cast<size_t>(oW) * 4);
       }
     }
+  };
+  std::vector<uint8_t> scratch(frameBytes);
+  auto write_frame = [&](double ft, const uint8_t* data) -> bool {
+    if (!write_chunk_header(ft, frameBytes)) return false;
+    if (std::fwrite(data, 1, frameBytes, stdout) != frameBytes) return false;
     std::fflush(stdout);  // flush each frame; backpressure paces the decode
     return true;
+  };
+  auto emit_frame = [&](double ft) -> bool {
+    render_frame(scratch.data());
+    return write_frame(ft, scratch.data());
   };
 
   // Emit everything the decoder has ready. Shared by the normal per-packet
@@ -382,6 +402,53 @@ int decode_server(const std::string& input, int height, double start_sec) {
     }
   };
 
+  // Reverse playback: video only decodes forward, so play backward by GOP-ish
+  // chunks — seek to the keyframe before revHead, decode forward keeping a
+  // memory-capped ring of rendered frames below revHead, then emit the ring
+  // back-to-front (descending pts). revHead advances down to the lowest
+  // emitted frame; when that's the keyframe itself, the next chunk's -eps seek
+  // lands in the PREVIOUS GOP. Long GOPs that overflow the ring re-decode
+  // their prefix per chunk (bounded O(GOP²/chunk), cheap with threading).
+  auto reverse_chunk = [&]() {
+    const double chunkEnd = revHead;
+    const double seekT = chunkEnd - 0.0005 > 0.0 ? chunkEnd - 0.0005 : 0.0;
+    av_seek_frame(fmt, vs, static_cast<int64_t>(seekT / av_q2d(st->time_base)),
+                  AVSEEK_FLAG_BACKWARD);
+    avcodec_flush_buffers(dec);
+    const size_t maxKeep = std::max<size_t>(8, (192ull << 20) / frameBytes);
+    std::deque<std::pair<double, std::vector<uint8_t>>> kept;
+    bool past = false, drainSent = false;
+    while (!past) {
+      if (wantClose.load() || seekReq.load() >= 0.0) return;  // preempted
+      const int rr = drainSent ? -1 : av_read_frame(fmt, pkt);
+      if (rr < 0) {
+        if (drainSent) break;
+        drainSent = true;
+        avcodec_send_packet(dec, nullptr);  // drain the thread pipeline
+      } else if (pkt->stream_index != vs || avcodec_send_packet(dec, pkt) < 0) {
+        av_packet_unref(pkt);
+        continue;
+      }
+      while (avcodec_receive_frame(dec, frame) >= 0) {
+        const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                              ? frame->best_effort_timestamp * av_q2d(st->time_base)
+                              : 0.0;
+        if (ft >= chunkEnd - 0.0005) { past = true; continue; }
+        std::vector<uint8_t> buf(frameBytes);
+        render_frame(buf.data());
+        kept.emplace_back(ft, std::move(buf));
+        if (kept.size() > maxKeep) kept.pop_front();
+      }
+      if (rr >= 0) av_packet_unref(pkt);
+    }
+    if (kept.empty()) { revHead = 0.0; return; }  // nothing earlier — at the start
+    for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
+      if (wantClose.load() || seekReq.load() >= 0.0 || paused.load()) return;
+      if (!write_frame(it->first, it->second.data())) { wantClose.store(true); return; }
+      revHead = it->first;  // progressive: a mid-chunk preemption stays consistent
+    }
+  };
+
   if (start_sec > 0.0) {
     const int64_t ts = static_cast<int64_t>(start_sec / av_q2d(st->time_base));
     av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
@@ -392,16 +459,33 @@ int decode_server(const std::string& input, int height, double start_sec) {
   while (!wantClose.load()) {
     const double sk = seekReq.exchange(-1.0);
     if (sk >= 0.0) {
-      const int64_t ts = static_cast<int64_t>(sk / av_q2d(st->time_base));
-      av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
-      avcodec_flush_buffers(dec);
-      dropUntil = sk;
-      eof = false;
-      drained = false;  // flush_buffers re-arms a drained decoder
-      oneShot = true;
-      preview = true;
+      dirState = dirReq.load();
+      if (dirState < 0) {
+        revHead = sk;
+        dropUntil = -1.0;
+        oneShot = false;
+        preview = false;
+        eof = false;
+      } else {
+        const int64_t ts = static_cast<int64_t>(sk / av_q2d(st->time_base));
+        av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
+        avcodec_flush_buffers(dec);
+        dropUntil = sk;
+        eof = false;
+        drained = false;  // flush_buffers re-arms a drained decoder
+        oneShot = true;
+        preview = true;
+      }
       if (!write_chunk_header(sk, 0)) break;  // seek marker
       std::fflush(stdout);
+    }
+    if (dirState < 0) {
+      if (paused.load() || revHead <= 0.0005) {
+        sleep_ms(8);  // reverse idles at pause / once it hits the start
+        continue;
+      }
+      reverse_chunk();
+      continue;
     }
     if ((paused.load() && !oneShot) || eof) {
       sleep_ms(8);
@@ -503,7 +587,8 @@ int decode_server_audio(const std::string& input, double start_sec) {
   std::atomic<bool> wantClose{false};
   std::atomic<bool> paused{false};
   std::atomic<double> seekReq{-1.0};
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq };
+  std::atomic<int> dirReq{1};
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -513,6 +598,8 @@ int decode_server_audio(const std::string& input, double start_sec) {
   double dropUntil = -1.0;
   bool eof = false;
   bool drained = false;  // EOF flush packet sent (reset by seek)
+  int dirState = 1;      // 1 = forward, -1 = reverse (sample-reversed chunks)
+  double revHead = 0.0;  // reverse playback position (descending)
   auto do_seek = [&](double t) {
     const int64_t ts = static_cast<int64_t>(t / av_q2d(st->time_base));
     av_seek_frame(fmt, as, ts, AVSEEK_FLAG_BACKWARD);
@@ -521,6 +608,80 @@ int decode_server_audio(const std::string& input, double start_sec) {
     dropUntil = t;
     eof = false;
     drained = false;
+  };
+
+  // Reverse audio ("the quirk"): decode a short window ENDING at revHead
+  // forward, window it precisely at 48 kHz, reverse the frame order, and emit
+  // it as ONE chunk whose pts = the window END (the first emitted sample's
+  // content time — the daemon's position then descends from there). Repeat
+  // into earlier windows. Audio decode is so fast the re-seek per window is
+  // negligible.
+  const double REV_WIN_SEC = 0.8;
+  auto reverse_chunk_audio = [&](std::vector<float>& acc, std::vector<float>& rev) {
+    const double chunkEnd = revHead;
+    const double chunkStart = chunkEnd - REV_WIN_SEC > 0.0 ? chunkEnd - REV_WIN_SEC : 0.0;
+    av_seek_frame(fmt, as, static_cast<int64_t>(chunkStart / av_q2d(st->time_base)),
+                  AVSEEK_FLAG_BACKWARD);
+    avcodec_flush_buffers(dec);
+    swr_make();
+    acc.clear();
+    double accStart = -1.0;
+    bool past = false, drainSent = false;
+    while (!past) {
+      if (wantClose.load() || seekReq.load() >= 0.0) return;  // preempted
+      const int rr = drainSent ? -1 : av_read_frame(fmt, pkt);
+      if (rr < 0) {
+        if (drainSent) break;
+        drainSent = true;
+        avcodec_send_packet(dec, nullptr);
+      } else if (pkt->stream_index != as || avcodec_send_packet(dec, pkt) < 0) {
+        av_packet_unref(pkt);
+        continue;
+      }
+      while (avcodec_receive_frame(dec, frame) >= 0) {
+        const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                              ? frame->best_effort_timestamp * av_q2d(st->time_base)
+                              : 0.0;
+        if (accStart < 0.0) accStart = ft;
+        if (ft >= chunkEnd + 0.05) { past = true; break; }
+        const int outCap = static_cast<int>(av_rescale_rnd(
+            swr_get_delay(swr, dec->sample_rate) + frame->nb_samples, outSr,
+            dec->sample_rate, AV_ROUND_UP)) + 64;
+        const size_t off = acc.size();
+        acc.resize(off + static_cast<size_t>(outCap) * outCh);
+        uint8_t* outPlanes[1] = { reinterpret_cast<uint8_t*>(acc.data() + off) };
+        const int got = swr_convert(swr, outPlanes, outCap,
+                                    const_cast<const uint8_t**>(frame->extended_data),
+                                    frame->nb_samples);
+        acc.resize(off + (got > 0 ? static_cast<size_t>(got) * outCh : 0));
+      }
+      if (rr >= 0) av_packet_unref(pkt);
+    }
+    const int64_t total = static_cast<int64_t>(acc.size()) / outCh;
+    if (total == 0 || accStart < 0.0) { revHead = 0.0; return; }
+    int64_t skip = static_cast<int64_t>(std::llround((chunkStart - accStart) * outSr));
+    int64_t take = static_cast<int64_t>(std::llround((chunkEnd - chunkStart) * outSr));
+    if (skip < 0) { take += skip; skip = 0; }
+    if (skip > total) skip = total;
+    if (take > total - skip) take = total - skip;
+    if (take <= 0) {
+      revHead = chunkStart > 0.0005 ? chunkStart : 0.0;  // progress regardless
+      return;
+    }
+    rev.resize(static_cast<size_t>(take) * outCh);
+    for (int64_t i = 0; i < take; ++i) {
+      const float* s = acc.data() + static_cast<size_t>(skip + take - 1 - i) * outCh;
+      float* d = rev.data() + static_cast<size_t>(i) * outCh;
+      for (int c = 0; c < outCh; ++c) d[c] = s[c];
+    }
+    const uint32_t bytes = static_cast<uint32_t>(take) * outCh * sizeof(float);
+    if (!write_chunk_header(chunkEnd, bytes) ||
+        std::fwrite(rev.data(), 1, bytes, stdout) != bytes) {
+      wantClose.store(true);
+      return;
+    }
+    std::fflush(stdout);
+    revHead = chunkStart;
   };
 
   auto pump_decoded = [&]() {
@@ -555,16 +716,31 @@ int decode_server_audio(const std::string& input, double start_sec) {
     }
   };
 
+  std::vector<float> accBuf, revBuf;  // reverse-window scratch (reused)
   if (start_sec > 0.0) do_seek(start_sec);  // stream BEGINS here — no marker
 
   while (!wantClose.load()) {
     const double sk = seekReq.exchange(-1.0);
     if (sk >= 0.0) {
-      do_seek(sk);
+      dirState = dirReq.load();
+      if (dirState < 0) {
+        revHead = sk;
+        eof = false;
+      } else {
+        do_seek(sk);
+      }
       // Marker first, even while paused: the daemon flushes its ring buffer
       // and rebases position at the marker, so a paused seek lands instantly.
       if (!write_chunk_header(sk, 0)) break;
       std::fflush(stdout);
+    }
+    if (dirState < 0) {
+      if (paused.load() || revHead <= 0.0005) {
+        sleep_ms(8);  // reverse idles at pause / once it hits the start
+        continue;
+      }
+      reverse_chunk_audio(accBuf, revBuf);
+      continue;
     }
     if (paused.load() || eof) {
       sleep_ms(8);
