@@ -1,14 +1,26 @@
 #include "decode.h"
 
+#include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
+// std::thread is unusable here: MSVC's <thread> pulls in the CRT <process.h>,
+// which collides with lathe's own process.h on the include path. Use Win32
+// threads + Sleep instead.
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+static void sleep_ms(int ms) { Sleep(static_cast<DWORD>(ms)); }
+#else
+#include <chrono>
+#include <thread>
+static void sleep_ms(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 #endif
 
 #ifdef LATHE_HAVE_LIBAV
@@ -116,11 +128,178 @@ int decode_probe(const std::string& input, int height, double seek_sec, int nfra
   return out > 0 ? 0 : 1;
 }
 
+// --- persistent decode-server ---------------------------------------------
+namespace {
+
+double cmd_num(const std::string& s, const char* key, double def) {
+  const std::string k = std::string("\"") + key + "\"";
+  auto p = s.find(k);
+  if (p == std::string::npos) return def;
+  p = s.find(':', p + k.size());
+  if (p == std::string::npos) return def;
+  ++p;
+  while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) ++p;
+  try { return std::stod(s.substr(p)); } catch (...) { return def; }
+}
+
+bool cmd_is(const std::string& s, const char* op) {
+  return s.find(std::string("\"") + op + "\"") != std::string::npos;
+}
+
+struct CtlCtx {
+  std::atomic<bool>* wantClose;
+  std::atomic<bool>* paused;
+  std::atomic<double>* seekReq;
+};
+
+// Reads JSON-line commands on stdin and drives the atomics. Runs on its own
+// thread; blocks on stdin and exits when the stream closes.
+void ctl_loop(CtlCtx* c) {
+  std::string line;
+  int ch;
+  while ((ch = std::getchar()) != EOF) {
+    if (ch == '\n' || ch == '\r') {
+      if (!line.empty()) {
+        if (cmd_is(line, "close")) { c->wantClose->store(true); break; }
+        else if (cmd_is(line, "seek")) c->seekReq->store(cmd_num(line, "sec", 0.0));
+        else if (cmd_is(line, "pause")) c->paused->store(true);
+        else if (cmd_is(line, "play")) c->paused->store(false);
+        line.clear();
+      }
+    } else {
+      line.push_back(static_cast<char>(ch));
+    }
+  }
+  c->wantClose->store(true);  // stdin EOF
+}
+
+#ifdef _WIN32
+DWORD WINAPI ctl_thread_proc(LPVOID p) { ctl_loop(static_cast<CtlCtx*>(p)); return 0; }
+#endif
+
+}  // namespace
+
+int decode_server(const std::string& input, int height) {
+#ifdef _WIN32
+  _setmode(_fileno(stdout), _O_BINARY);  // raw frame bytes on stdout
+#endif
+  if (height <= 0) height = 720;
+
+  AVFormatContext* fmt = nullptr;
+  if (avformat_open_input(&fmt, input.c_str(), nullptr, nullptr) < 0 ||
+      avformat_find_stream_info(fmt, nullptr) < 0) {
+    std::fprintf(stderr, "decode-server: open failed: %s\n", input.c_str());
+    if (fmt) avformat_close_input(&fmt);
+    return 1;
+  }
+  const int vs = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  if (vs < 0) { std::fprintf(stderr, "decode-server: no video stream\n"); avformat_close_input(&fmt); return 1; }
+  AVStream* st = fmt->streams[vs];
+  const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
+  AVCodecContext* dec = codec ? avcodec_alloc_context3(codec) : nullptr;
+  if (!dec || avcodec_parameters_to_context(dec, st->codecpar) < 0 ||
+      avcodec_open2(dec, codec, nullptr) < 0) {
+    std::fprintf(stderr, "decode-server: codec open failed\n");
+    if (dec) avcodec_free_context(&dec);
+    avformat_close_input(&fmt);
+    return 1;
+  }
+
+  const int cw = dec->width, ch = dec->height;
+  int oH = (height > ch) ? ch : height;
+  int oW = static_cast<int>(std::lround(static_cast<double>(cw) * oH / ch));
+  oW &= ~1; oH &= ~1;
+  if (oW < 2) oW = 2;
+  if (oH < 2) oH = 2;
+  const double dur = (fmt->duration > 0) ? static_cast<double>(fmt->duration) / AV_TIME_BASE : 0.0;
+  const double fps = st->avg_frame_rate.num > 0 ? av_q2d(st->avg_frame_rate) : 30.0;
+
+  SwsContext* sws = sws_getContext(cw, ch, dec->pix_fmt, oW, oH, AV_PIX_FMT_RGBA,
+                                   SWS_BILINEAR, nullptr, nullptr, nullptr);
+  AVFrame* frame = av_frame_alloc();
+  AVFrame* rgba = av_frame_alloc();
+  rgba->format = AV_PIX_FMT_RGBA; rgba->width = oW; rgba->height = oH;
+  av_frame_get_buffer(rgba, 0);
+  AVPacket* pkt = av_packet_alloc();
+
+  std::fprintf(stderr, "WAVDESK_GEOM w=%d h=%d fps=%d dur=%.3f pix_fmt=rgba\n",
+               oW, oH, static_cast<int>(std::lround(fps)), dur);
+  std::fflush(stderr);
+
+  // Control thread: JSON-line commands on stdin (seek/pause/play/close). Detached
+  // — it blocks on stdin; the process exits when the main loop ends.
+  std::atomic<bool> wantClose{false};
+  std::atomic<bool> paused{false};
+  std::atomic<double> seekReq{-1.0};
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq };
+#ifdef _WIN32
+  HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
+#else
+  std::thread ctlThread(ctl_loop, &ctlCtx);
+#endif
+
+  double dropUntil = -1.0;  // frame-accurate seek: drop frames before this time
+  bool eof = false;
+  while (!wantClose.load()) {
+    const double sk = seekReq.exchange(-1.0);
+    if (sk >= 0.0) {
+      const int64_t ts = static_cast<int64_t>(sk / av_q2d(st->time_base));
+      av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
+      avcodec_flush_buffers(dec);
+      dropUntil = sk;
+      eof = false;
+    }
+    if (paused.load() || eof) {
+      sleep_ms(8);
+      continue;
+    }
+    if (av_read_frame(fmt, pkt) < 0) { eof = true; continue; }
+    if (pkt->stream_index == vs && avcodec_send_packet(dec, pkt) >= 0) {
+      while (avcodec_receive_frame(dec, frame) >= 0) {
+        const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+                              ? frame->best_effort_timestamp * av_q2d(st->time_base)
+                              : 0.0;
+        if (dropUntil >= 0.0 && ft < dropUntil - 0.001) continue;
+        dropUntil = -1.0;
+        sws_scale(sws, frame->data, frame->linesize, 0, ch, rgba->data, rgba->linesize);
+        // Per-frame header: presentation time in microseconds (LE u64), so the
+        // consumer can place frames across in-process seeks.
+        const uint64_t pts_us = static_cast<uint64_t>(ft * 1e6);
+        std::fwrite(&pts_us, sizeof(pts_us), 1, stdout);
+        for (int y = 0; y < oH; y++) {
+          std::fwrite(rgba->data[0] + static_cast<size_t>(y) * rgba->linesize[0], 1,
+                      static_cast<size_t>(oW) * 4, stdout);
+        }
+        std::fflush(stdout);  // flush each frame; backpressure paces the decode
+        if (wantClose.load() || seekReq.load() >= 0.0) break;  // stay responsive
+      }
+    }
+    av_packet_unref(pkt);
+  }
+
+#ifdef _WIN32
+  if (ctlThread) CloseHandle(ctlThread);  // blocked on stdin; dies with the process
+#else
+  ctlThread.detach();
+#endif
+  av_packet_free(&pkt);
+  av_frame_free(&rgba);
+  av_frame_free(&frame);
+  sws_freeContext(sws);
+  avcodec_free_context(&dec);
+  avformat_close_input(&fmt);
+  return 0;
+}
+
 }  // namespace lathe
 #else
 namespace lathe {
 int decode_probe(const std::string&, int, double, int) {
   std::fprintf(stderr, "decode-probe: libav not built in (LGPL ffmpeg dev package missing)\n");
+  return 1;
+}
+int decode_server(const std::string&, int) {
+  std::fprintf(stderr, "decode-server: libav not built in (LGPL ffmpeg dev package missing)\n");
   return 1;
 }
 }  // namespace lathe

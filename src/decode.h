@@ -11,4 +11,12 @@ namespace lathe {
 // decode-server is built on it. Rotation is not applied yet (TODO).
 int decode_probe(const std::string& input, int height, double seek_sec, int nframes);
 
+// Persistent decoder: opens `input` once, streams scaled RGBA frames on stdout
+// (each prefixed with an 8-byte LE microsecond PTS), emits WAVDESK_GEOM on
+// stderr, and reads JSON-line commands on stdin: {"op":"seek","sec":<t>} (frame-
+// accurate IN-PROCESS av_seek_frame, no re-spawn), {"op":"pause"}/{"op":"play"},
+// {"op":"close"}. Backpressure paces the decode. The control protocol the
+// frame-server / engine drive instead of spawning a new process per seek.
+int decode_server(const std::string& input, int height);
+
 }

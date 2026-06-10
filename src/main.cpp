@@ -98,6 +98,19 @@ int run_cli(const std::vector<std::string>& args) {
     }
     return lathe::decode_probe(args[2], height, seek, frames);
   }
+  if (cmd == "decode-server") {
+    if (args.size() < 3) {
+      std::fputs("error: decode-server requires <input>\n", stderr);
+      return 2;
+    }
+    int height = 720;
+    for (size_t i = 3; i < args.size(); ++i) {
+      std::string v;
+      if (parse_kv(args[i], "height", &v)) { try { height = std::stoi(v); } catch (...) {} }
+      else { std::fprintf(stderr, "error: unknown argument '%s'\n", args[i].c_str()); return 2; }
+    }
+    return lathe::decode_server(args[2], height);
+  }
 
   // Pre-vendor-folder bootstraps left ffmpeg.exe next to the executable;
   // adopt it into the shared bin once so it isn't re-downloaded. After the
