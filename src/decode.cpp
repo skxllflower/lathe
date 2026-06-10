@@ -269,8 +269,17 @@ int decode_server(const std::string& input, int height, double start_sec) {
   AVStream* st = fmt->streams[vs];
   const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
   AVCodecContext* dec = codec ? avcodec_alloc_context3(codec) : nullptr;
-  if (!dec || avcodec_parameters_to_context(dec, st->codecpar) < 0 ||
-      avcodec_open2(dec, codec, nullptr) < 0) {
+  bool dec_ok = dec && avcodec_parameters_to_context(dec, st->codecpar) >= 0;
+  if (dec_ok) {
+    // Multithreaded decode. The default is ONE thread, which made 4K H.264
+    // barely-realtime and turned seek (keyframe + decode-forward to target)
+    // into a multi-second stall on long-GOP files.
+    dec->thread_count = 0;  // auto (core count)
+    dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    dec->flags2 |= AV_CODEC_FLAG2_FAST;
+    dec_ok = avcodec_open2(dec, codec, nullptr) >= 0;
+  }
+  if (!dec_ok) {
     std::fprintf(stderr, "decode-server: codec open failed\n");
     if (dec) avcodec_free_context(&dec);
     avformat_close_input(&fmt);
@@ -323,13 +332,32 @@ int decode_server(const std::string& input, int height, double start_sec) {
 
   double dropUntil = -1.0;  // frame-accurate seek: drop frames before this time
   bool eof = false;
-  bool oneShot = false;     // deliver ONE frame after a seek even while paused,
-                            // so a paused scrub still updates the picture
+  bool oneShot = false;     // chase the exact target frame after a seek even
+                            // while paused, so a paused scrub still lands
+  bool preview = false;     // surface the first decoded frame during catch-up
+
+  auto emit_frame = [&](double ft) -> bool {
+    sws_scale(sws, frame->data, frame->linesize, 0, srcH, rgba->data, rgba->linesize);
+    if (!write_chunk_header(ft, frameBytes)) return false;
+    if (rot != 0) {
+      rotate_rgba(rgba->data[0], rgba->linesize[0], pW, pH, rotBuf.data(), rot);
+      if (std::fwrite(rotBuf.data(), 1, frameBytes, stdout) != frameBytes) return false;
+    } else {
+      for (int y = 0; y < oH; y++) {
+        std::fwrite(rgba->data[0] + static_cast<size_t>(y) * rgba->linesize[0], 1,
+                    static_cast<size_t>(oW) * 4, stdout);
+      }
+    }
+    std::fflush(stdout);  // flush each frame; backpressure paces the decode
+    return true;
+  };
+
   if (start_sec > 0.0) {
     const int64_t ts = static_cast<int64_t>(start_sec / av_q2d(st->time_base));
     av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(dec);
     dropUntil = start_sec;  // stream BEGINS here — no marker
+    preview = true;
   }
   while (!wantClose.load()) {
     const double sk = seekReq.exchange(-1.0);
@@ -340,6 +368,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
       dropUntil = sk;
       eof = false;
       oneShot = true;
+      preview = true;
       if (!write_chunk_header(sk, 0)) break;  // seek marker
       std::fflush(stdout);
     }
@@ -353,23 +382,20 @@ int decode_server(const std::string& input, int height, double start_sec) {
         const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
                               ? frame->best_effort_timestamp * av_q2d(st->time_base)
                               : 0.0;
-        if (dropUntil >= 0.0 && ft < dropUntil - 0.001) continue;
-        dropUntil = -1.0;
-        sws_scale(sws, frame->data, frame->linesize, 0, srcH, rgba->data, rgba->linesize);
-        if (!write_chunk_header(ft, frameBytes)) { wantClose.store(true); break; }
-        if (rot != 0) {
-          rotate_rgba(rgba->data[0], rgba->linesize[0], pW, pH, rotBuf.data(), rot);
-          if (std::fwrite(rotBuf.data(), 1, frameBytes, stdout) != frameBytes) {
-            wantClose.store(true);
-            break;
+        if (dropUntil >= 0.0 && ft < dropUntil - 0.001) {
+          // Long-GOP catch-up takes a beat even multithreaded: ship the FIRST
+          // decoded (keyframe-adjacent) frame instantly so a scrub shows
+          // nearby content while the exact target frame is chased down. It
+          // doesn't clear oneShot — the chase continues through a pause.
+          if (preview) {
+            preview = false;
+            if (!emit_frame(ft)) { wantClose.store(true); break; }
           }
-        } else {
-          for (int y = 0; y < oH; y++) {
-            std::fwrite(rgba->data[0] + static_cast<size_t>(y) * rgba->linesize[0], 1,
-                        static_cast<size_t>(oW) * 4, stdout);
-          }
+          continue;
         }
-        std::fflush(stdout);  // flush each frame; backpressure paces the decode
+        dropUntil = -1.0;
+        preview = false;
+        if (!emit_frame(ft)) { wantClose.store(true); break; }
         oneShot = false;
         // Stay responsive mid-packet. Don't break on pause here: abandoning a
         // half-drained packet makes the next send_packet EAGAIN-fail and drops
