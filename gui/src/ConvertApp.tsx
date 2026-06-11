@@ -402,6 +402,34 @@ export default function ConvertApp() {
   const lastSelectedRef        = useRef<string | null>(null);
   const lastSelectedOutputRef  = useRef<string | null>(null);
 
+  // Main-window close owns full app teardown: the pre-spawned drag
+  // overlay would otherwise keep a headless app alive. An in-flight
+  // batch prompts first — closing cancels it (lathe removes partials).
+  useEffect(() => {
+    const w = getCurrentWindow();
+    const un = w.onCloseRequested(async (e) => {
+      e.preventDefault();
+      const active = outputsRef.current.filter(
+        o => (o.status === 'converting' || o.status === 'queued'));
+      if (active.length > 0) {
+        const goAhead = await confirmInWindow({
+          title:        `${active.length} conversion${active.length === 1 ? '' : 's'} in progress`,
+          message:      'Closing cancels the active conversions. Partial outputs are cleaned up.',
+          confirmLabel: 'Cancel & close',
+          cancelLabel:  'Keep working',
+        });
+        if (!goAhead) return;
+        batchCancelRef.current = true;
+        for (const o of active) {
+          if (o.jobId) void invoke('lathe_cancel', { jobId: o.jobId });
+        }
+      }
+      void invoke('app_exit');
+    });
+    return () => { void un.then(u => u()).catch(() => {}); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Probe drives the title-bar connected indicator. Cheap — just a
   // path existence check on the resolution chain.
   useEffect(() => {
@@ -1270,7 +1298,7 @@ export default function ConvertApp() {
             }
           >
             {binStatus.resolved
-              ? <Link2     size={10} className={binStatus.source === 'configured' ? 'text-emerald-400' : 'text-[color:var(--theme-warn-fg)]'} />
+              ? <Link2     size={10} className="text-emerald-400" />
               : <Link2Off  size={10} className="text-zinc-400" />}
           </span>
         )}
@@ -1999,7 +2027,7 @@ export default function ConvertApp() {
                 }
               >
                 {binStatus.resolved
-                  ? <Link2     size={9} className={binStatus.source === 'configured' ? 'text-emerald-400' : 'text-[color:var(--theme-warn-fg)]'} />
+                  ? <Link2     size={9} className="text-emerald-400" />
                   : <Link2Off  size={9} className="text-zinc-400" />}
                 <span className="text-zinc-500 uppercase tracking-wider">
                   {binStatus.resolved ? 'lathe.exe' : 'no binary'}

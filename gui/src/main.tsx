@@ -11,6 +11,13 @@ import './styles.css';
 // `?wd=drag-overlay` is the pre-spawned drag-chip surface (lib.rs setup).
 const wd = new URLSearchParams(window.location.search).get('wd');
 
+// No native browser context menu anywhere except text fields.
+window.addEventListener('contextmenu', (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t?.closest('input, textarea')) return;
+  e.preventDefault();
+});
+
 // Blocks input on the parent window while a dialog window is up — the
 // dialog is alwaysOnTop + owned, but the controls underneath must not
 // react. Mirrors WAVdesk's input-lock overlay.

@@ -34,16 +34,17 @@ fn lathe_jobs() -> &'static JobMap {
 //      vendor spaces — Program Files\Vacant Systems on Windows)
 // The standalone app has no Settings field yet, so `configured` is
 // normally empty; the parameter stays for parity with WAVdesk's IPC.
-fn dev_tool_fallback(name: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE")?;
-    Some(
-        PathBuf::from(home)
-            .join("Dev")
-            .join(name)
-            .join("build")
-            .join("Debug")
-            .join(format!("{}.exe", name)),
-    )
+// Release first: a Debug-built lathe converts/decodes far below
+// realtime — when both configurations exist the Release build wins.
+fn dev_tool_fallbacks(name: &str) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("USERPROFILE") else {
+        return Vec::new();
+    };
+    let base = PathBuf::from(home).join("Dev").join(name).join("build");
+    vec![
+        base.join("Release").join(format!("{}.exe", name)),
+        base.join("Debug").join(format!("{}.exe", name)),
+    ]
 }
 
 fn tool_dir_name(name: &str) -> String {
@@ -115,10 +116,9 @@ fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
             return Ok(pb);
         }
     }
-    let dev = dev_tool_fallback(name);
-    if let Some(d) = &dev {
-        if d.exists() {
-            return Ok(d.clone());
+    for cand in dev_tool_fallbacks(name) {
+        if cand.exists() {
+            return Ok(cand);
         }
     }
     for cand in installed_tool_fallbacks(name) {
@@ -131,8 +131,7 @@ fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
         name,
         env_var,
         tool_dir_name(name),
-        dev.map(|d| d.display().to_string())
-            .unwrap_or_else(|| format!(r"%USERPROFILE%\Dev\{}\build\Debug", name)),
+        format!(r"%USERPROFILE%\Dev\{}\build", name),
     ))
 }
 
@@ -438,12 +437,11 @@ pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
             };
         }
     }
-    let dev = dev_tool_fallback(&name);
-    if let Some(d) = &dev {
-        if d.exists() {
+    for cand in dev_tool_fallbacks(&name) {
+        if cand.exists() {
             return ToolBinaryStatus {
                 resolved: true,
-                path:     d.display().to_string(),
+                path:     cand.display().to_string(),
                 source:   "dev".into(),
                 message:  "dev fallback".into(),
             };
@@ -467,10 +465,25 @@ pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
             "{}.exe not found. Set {} env, reinstall, or build at {}.",
             name,
             env_var,
-            dev.map(|d| d.display().to_string())
-                .unwrap_or_else(|| format!(r"%USERPROFILE%\Dev\{}\build\Debug", name)),
+            format!(r"%USERPROFILE%\Dev\{}\build", name),
         ),
     }
+}
+
+/// Tear the whole app down: kill every tracked child + exit. The main
+/// window's close flow calls this so the pre-spawned drag overlay never
+/// keeps a headless app alive, and no ffmpeg tree outlives the GUI.
+/// lathe_cancel already removed any partial outputs for cancelled jobs.
+#[tauri::command]
+pub fn app_exit(app: AppHandle) {
+    if let Ok(mut map) = lathe_jobs().lock() {
+        for (_, child) in map.drain() {
+            if let Ok(mut c) = child.lock() {
+                let _ = c.kill();
+            }
+        }
+    }
+    app.exit(0);
 }
 
 #[tauri::command]
