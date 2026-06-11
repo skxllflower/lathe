@@ -1950,7 +1950,7 @@ export default function ConvertApp() {
                           e.stopPropagation();
                           void invoke('os_reveal_path', { path: it.output! });
                         }}
-                        className="text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-none shrink-0"
+                        className="text-zinc-600 hover:text-zinc-300 transition-none shrink-0"
                         title="Show in folder"
                       >
                         <FolderOpen size={9} />
