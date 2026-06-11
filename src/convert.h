@@ -44,6 +44,12 @@ struct ConvertOptions {
                                  // (ffmpeg -ss before -i). The consumer seeks by
                                  // restarting the stream at a new offset. Empty
                                  // / 0 = from the beginning.
+  std::string colors;            // GIF: palette size 2..256 (palettegen
+                                 // max_colors). Empty = 256.
+  bool copy_streams = false;     // remux only: -c copy, no re-encode. Every
+                                 // quality/filter knob is skipped; fails
+                                 // naturally when the target container can't
+                                 // hold the source codecs.
 };
 
 ConvertResult convert(const std::string& input,

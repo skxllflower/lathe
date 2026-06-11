@@ -156,6 +156,21 @@ static void apply_options(std::vector<std::string>& args,
       args.push_back("-quality");
       args.push_back(std::to_string(q));
     }
+  } else if (out_ext == "avif") {
+    // AV1 (libaom): -crf 0 (best) .. 63 (worst), -b:v 0 selects constant-
+    // quality mode. Map 100 -> 10, 0 -> 63. -cpu-used 4 keeps still encodes
+    // interactive; libaom's default (1) takes ~10s on a large photo for a
+    // quality delta that's invisible at these sizes.
+    int q;
+    if (parse_quality(o.quality, &q)) {
+      int crf = 63 - static_cast<int>(std::lround((q / 100.0) * 53.0));
+      args.push_back("-crf");
+      args.push_back(std::to_string(crf));
+      args.push_back("-b:v");
+      args.push_back("0");
+    }
+    args.push_back("-cpu-used");
+    args.push_back("4");
   } else if (out_ext == "mp4" || out_ext == "mkv" ||
              out_ext == "mov" || out_ext == "m4v") {
     // H.264 (libx264 default): -crf 0 (best) .. 51 (worst). Keep the top of
@@ -214,13 +229,19 @@ ConvertResult convert(const std::string& input,
     "-loglevel", "error",
     "-stats_period", "0.25",
   };
-  apply_options(argv, ext_of(output), opts);
-  // Preview-grade video knobs (WAVdesk's video preview): downscale to a max
-  // height (keep aspect, even width via -2, never upscale) + a fast encoder
-  // preset, so a huge/4K source transcodes quickly and light instead of pinning
-  // the CPU at native resolution. Video outputs only.
-  {
-    const std::string oext = ext_of(output);
+  const std::string oext = ext_of(output);
+  if (opts.copy_streams) {
+    // Remux: repackage the source streams into the new container untouched.
+    // Near-instant and lossless; ffmpeg errors out when the container can't
+    // hold the source codecs, and that error surfaces to the caller as-is.
+    argv.push_back("-c");
+    argv.push_back("copy");
+  } else {
+    apply_options(argv, oext, opts);
+    // Preview-grade video knobs (WAVdesk's video preview): downscale to a max
+    // height (keep aspect, even width via -2, never upscale) + a fast encoder
+    // preset, so a huge/4K source transcodes quickly and light instead of pinning
+    // the CPU at native resolution. Video outputs only.
     const bool video_out = oext == "mp4" || oext == "mkv" || oext == "mov" ||
                            oext == "m4v" || oext == "webm";
     if (video_out && !opts.max_height.empty()) {
@@ -230,6 +251,25 @@ ConvertResult convert(const std::string& input,
     if (video_out && !opts.preset.empty()) {
       argv.push_back("-preset");
       argv.push_back(opts.preset);
+    }
+    if (oext == "gif") {
+      // GIF via single-pass palettegen/paletteuse. ffmpeg's default path
+      // dithers every frame against a fixed universal palette — the classic
+      // "ugly gif" look. A per-source palette costs one split (no second
+      // input pass) and is the difference between ugly and clean. fps runs
+      // first so palette stats see the final frame set; GIF frame delay is
+      // centiseconds (50 fps hard ceiling, fast delays misrender in
+      // browsers), so default to 15 unless the caller overrides.
+      const std::string fps    = opts.fps.empty()    ? "15"  : opts.fps;
+      const std::string colors = opts.colors.empty() ? "256" : opts.colors;
+      std::string chain = "[0:v]fps=" + fps + ",";
+      if (!opts.max_height.empty()) {
+        chain += "scale=-2:min(" + opts.max_height + "\\,ih):flags=lanczos,";
+      }
+      chain += "split[s0][s1];[s0]palettegen=max_colors=" + colors +
+               "[p];[s1][p]paletteuse=dither=sierra2_4a";
+      argv.push_back("-filter_complex");
+      argv.push_back(chain);
     }
   }
   // Output duration cap (-t). Placed among the output options so ffmpeg stops

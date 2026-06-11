@@ -45,6 +45,9 @@ int print_help() {
     "  --duration=<sec>            cap output to first <sec> seconds (ffmpeg -t)\n"
     "  --max-height=<px>           downscale: cap output height, keep aspect\n"
     "  --preset=<name>             x264/x265 preset (ultrafast..veryslow)\n"
+    "  --fps=<n>                   GIF target: frame rate (default 15)\n"
+    "  --colors=<n>                GIF target: palette size 2..256 (default 256)\n"
+    "  --copy                      remux only: copy streams, no re-encode\n"
     "\n"
     "On Windows, paths and filenames are UTF-8 (non-ASCII characters\n"
     "are preserved end-to-end). ffmpeg.exe is resolved from the\n"
@@ -144,6 +147,9 @@ int run_cli(const std::vector<std::string>& args) {
       else if (parse_kv(a, "duration",          &opts.duration))          continue;
       else if (parse_kv(a, "max-height",        &opts.max_height))        continue;
       else if (parse_kv(a, "preset",            &opts.preset))            continue;
+      else if (parse_kv(a, "fps",               &opts.fps))               continue;
+      else if (parse_kv(a, "colors",            &opts.colors))            continue;
+      else if (a == "--copy") { opts.copy_streams = true; continue; }
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;
     }
