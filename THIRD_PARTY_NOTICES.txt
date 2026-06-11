@@ -31,3 +31,17 @@ a GPL build of FFmpeg (https://www.gnu.org/licenses/gpl-3.0.html), obtained
 and stored independently (see the application's shared tools directory). It
 is mere aggregation: it is not linked into lathe, and its source is likewise
 available from the projects above.
+
+LibRaw
+------
+Camera-RAW decoding in lathe uses LibRaw, statically linked, unmodified.
+LibRaw is dual-licensed; lathe uses it under the Common Development and
+Distribution License (CDDL) 1.0.
+
+  License:  CDDL 1.0 — https://opensource.org/license/cddl-1-0
+            (alternatively LGPL 2.1: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
+  Project:  https://www.libraw.org
+  Source:   https://github.com/LibRaw/LibRaw (version 0.21.4, unmodified)
+
+LibRaw is Copyright (C) 2008-2024 LibRaw LLC, and incorporates code from
+dcraw.c by Dave Coffin.

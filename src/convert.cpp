@@ -4,6 +4,7 @@
 #include "paths.h"
 #include "process.h"
 #include "progress.h"
+#include "rawdec.h"
 
 #include <algorithm>
 #include <cctype>
@@ -218,13 +219,36 @@ ConvertResult convert(const std::string& input,
     fs::create_directories(out_path.parent_path(), ec);
   }
 
-  double total_duration = probe_duration_seconds(input);
+  // Camera RAW inputs demosaic through LibRaw into a 16-bit PPM first;
+  // ffmpeg has no camera-RAW decoder at all. The intermediate sits next to
+  // the output (same volume, already-created directory) and is removed on
+  // every exit path below.
+  std::string effective_input = input;
+  fs::path raw_tmp;
+  if (is_camera_raw_ext(ext_of(input))) {
+    std::string raw_err;
+    raw_tmp  = out_path;
+    raw_tmp += ".rawdec.ppm";
+    if (!raw_decode_to_ppm(input, raw_tmp, &raw_err)) {
+      progress_error("RAW decode failed: " + raw_err);
+      return ConvertResult::FfmpegFailed;
+    }
+    effective_input = path_to_utf8(raw_tmp);
+  }
+  auto cleanup_raw = [&]() {
+    if (!raw_tmp.empty()) {
+      std::error_code rec;
+      fs::remove(raw_tmp, rec);
+    }
+  };
+
+  double total_duration = probe_duration_seconds(effective_input);
   progress_start(input, output, total_duration);
 
   std::vector<std::string> argv = {
     ffmpeg_path(),
     "-y",
-    "-i", input,
+    "-i", effective_input,
     "-progress", "pipe:1",
     "-loglevel", "error",
     "-stats_period", "0.25",
@@ -311,6 +335,8 @@ ConvertResult convert(const std::string& input,
       batch_speed.clear();
     }
   });
+
+  cleanup_raw();
 
   if (was_cancelled()) {
     fs::remove(out_path, ec);

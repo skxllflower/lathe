@@ -15,6 +15,7 @@ add_executable(lathe
   src/paths.cpp
   src/process.cpp
   src/progress.cpp
+  src/rawdec.cpp
 )
 target_include_directories(lathe PRIVATE src)
 
@@ -78,6 +79,33 @@ if (FFMPEG_DIR AND EXISTS "${FFMPEG_DIR}/include")
     COMMENT "lathe: copying LGPL ffmpeg DLLs + notice next to lathe.exe")
 else()
   message(STATUS "lathe: LGPL libav dev package not found under third_party/ — building without the linked decoder (configure with -DLATHE_FETCH_FFMPEG=ON to fetch it)")
+endif()
+
+# --- LibRaw (camera-RAW decoder). Dual-licensed CDDL-1.0 / LGPL-2.1; used
+# unmodified under CDDL, statically linked (CDDL is file-scoped copyleft, so
+# the combination stays closed). Notice ships in THIRD_PARTY_NOTICES.txt.
+# Sources fetch at configure time (LibRaw upstream has no CMake build; the
+# LibRaw-cmake companion project provides it). -DLATHE_WITH_LIBRAW=OFF builds
+# without RAW support; rawdec.cpp then compiles to a stub.
+option(LATHE_WITH_LIBRAW "Build the LibRaw camera-RAW decoder" ON)
+if (LATHE_WITH_LIBRAW)
+  include(FetchContent)
+  FetchContent_Declare(libraw_src
+    URL https://github.com/LibRaw/LibRaw/archive/refs/tags/0.21.4.zip)
+  FetchContent_Declare(libraw_cmake
+    URL https://github.com/LibRaw/LibRaw-cmake/archive/refs/heads/master.zip)
+  FetchContent_MakeAvailable(libraw_src)
+  set(LIBRAW_PATH "${libraw_src_SOURCE_DIR}" CACHE PATH "LibRaw source dir for LibRaw-cmake" FORCE)
+  set(ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(ENABLE_OPENMP   OFF CACHE BOOL "" FORCE)
+  set(ENABLE_JASPER   OFF CACHE BOOL "" FORCE)
+  set(ENABLE_LCMS     OFF CACHE BOOL "" FORCE)
+  # Cache-forced: LibRaw-cmake's own option() would override a plain
+  # variable under the pre-CMP0077 behavior its minimum version selects.
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(libraw_cmake)
+  target_link_libraries(lathe PRIVATE libraw::libraw)
+  target_compile_definitions(lathe PRIVATE LATHE_HAVE_LIBRAW=1)
 endif()
 
 if (MSVC)
