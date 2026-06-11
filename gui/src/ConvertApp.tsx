@@ -34,7 +34,8 @@ import {
   Music, Image as ImageIcon, Film, Minus, Check,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
-import { confirmInWindow } from './dialogs';
+import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
+import { askPromptInWindow, confirmInWindow } from './dialogs';
 import { WdSelect, type WdSelectOption } from './WdSelect';
 import {
   isAudioPath, isImagePath, isVideoPath, isRawPath,
@@ -1053,14 +1054,14 @@ export default function ConvertApp() {
   // Presets
   // ─────────────────────────────────────────────────────────────────
 
-  // In-place preset naming (standalone delta): the Save button opens a
-  // small inline name field under the preset row instead of WAVdesk's
-  // dedicated prompt window. null = closed.
-  const [presetDraft, setPresetDraft] = useState<string | null>(null);
-
-  const commitPreset = useCallback(() => {
-    const name = (presetDraft ?? '').trim().slice(0, 60);
-    setPresetDraft(null);
+  const onSavePreset = useCallback(async () => {
+    const name = await askPromptInWindow({
+      title:        'Save preset',
+      message:      'Saves the current format and advanced options under this name.',
+      placeholder:  'e.g. MP3 320 master',
+      confirmLabel: 'Save',
+      maxLength:    60,
+    });
     if (!name) return;
     // Presets own format + advanced + quality only. Destination is a sticky
     // workspace preference, and a preset must never silently re-arm
@@ -1076,7 +1077,7 @@ export default function ConvertApp() {
       return next;
     });
     setCurrentPreset(name);
-  }, [presetDraft, currentSettings]);
+  }, [currentSettings]);
 
   const onApplyPreset = useCallback((name: string) => {
     const p = presets.find(p => p.name === name);
@@ -1438,7 +1439,7 @@ export default function ConvertApp() {
                   />
                 </div>
                 <button
-                  onClick={() => setPresetDraft(d => (d === null ? '' : null))}
+                  onClick={onSavePreset}
                   disabled={running}
                   className="text-zinc-400 hover:text-zinc-100 disabled:opacity-30 p-0.5 transition-none"
                   title="Save current settings as preset"
@@ -1454,36 +1455,6 @@ export default function ConvertApp() {
                   <Trash2 size={11} />
                 </button>
               </div>
-              {presetDraft !== null && (
-                <div className="flex items-center gap-1">
-                  <input
-                    value={presetDraft}
-                    onChange={(e) => setPresetDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitPreset();
-                      if (e.key === 'Escape') setPresetDraft(null);
-                    }}
-                    autoFocus
-                    maxLength={60}
-                    placeholder="preset name"
-                    className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[0.625rem] px-2 h-5 focus:outline-none focus:border-zinc-500"
-                  />
-                  <button
-                    onClick={commitPreset}
-                    className="text-emerald-500/80 hover:text-emerald-300 p-0.5 transition-none"
-                    title="Save preset"
-                  >
-                    <Check size={11} />
-                  </button>
-                  <button
-                    onClick={() => setPresetDraft(null)}
-                    className="text-zinc-600 hover:text-zinc-300 p-0.5 transition-none"
-                    title="Cancel"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              )}
             </div>
 
             <div className="flex flex-col gap-1">
@@ -1888,6 +1859,7 @@ export default function ConvertApp() {
                 }
                 const it = entry.item;
                 const stamp = formatStamp(it.settings);
+                const dragOK = it.status === 'done' && !!it.output;
                 const sizeCell = it.status === 'done' && it.outSize !== undefined && it.outSize >= 0
                   ? formatBytes(it.outSize) + (it.srcSize && it.srcSize > 0
                       ? ` ${it.outSize >= it.srcSize ? '+' : '-'}${Math.abs(Math.round(((it.outSize - it.srcSize) / it.srcSize) * 100))}%`
@@ -1900,12 +1872,44 @@ export default function ConvertApp() {
                       it.selected
                         ? 'bg-zinc-800/70 text-zinc-100'
                         : 'hover:bg-zinc-900/60'
-                    }`}
+                    } ${dragOK ? 'cursor-grab active:cursor-grabbing' : ''}`}
                     title={it.error ?? it.output ?? it.inputPath}
                     onClick={(e) => {
                       e.stopPropagation();
                       const mode = e.shiftKey ? 'range' : (e.ctrlKey || e.metaKey) ? 'toggle' : 'single';
                       selectOutput(it.id, mode);
+                    }}
+                    draggable={dragOK}
+                    onDragStart={(e) => {
+                      if (!dragOK) return;
+                      e.preventDefault();
+                      // Dragging a selected row carries every selected done
+                      // output; an unselected row drags alone. Dedupe covers
+                      // overwrite-mode re-runs landing on the same path.
+                      const dragPaths = it.selected
+                        ? Array.from(new Set(outputsRef.current
+                            .filter(o => o.selected && o.status === 'done' && o.output)
+                            .map(o => o.output!)))
+                        : [it.output!];
+                      const name = it.output!.split(/[\\/]/).pop() ?? it.inputName;
+                      void (async () => {
+                        await startOverlayDrag({
+                          paths:       dragPaths,
+                          fileName:    name,
+                          isDirectory: false,
+                          count:       dragPaths.length,
+                        });
+                        try {
+                          await invoke('start_os_file_drag', {
+                            paths:       dragPaths,
+                            previewPng:  null,
+                            transparent: true,
+                          });
+                        } catch (err) {
+                          console.warn('start_os_file_drag (lathe) failed:', err);
+                          await endOverlayDrag();
+                        }
+                      })();
                     }}
                   >
                     {it.status === 'done'      && <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />}
