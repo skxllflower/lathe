@@ -68,6 +68,7 @@ pub fn run() {
             tools::fs_stat,
             tools::fs_is_dir,
             tools::os_reveal_path,
+            tools::os_open_url,
             tools::fs_move,
             tools::app_exit,
             drag_overlay::drag_overlay_start,

@@ -417,6 +417,9 @@ export default function ConvertApp() {
   // shift-click in one panel never reaches across to the other.
   const lastSelectedRef        = useRef<string | null>(null);
   const lastSelectedOutputRef  = useRef<string | null>(null);
+  // Which panel the user last interacted with — drives the Delete key,
+  // since there's no real focus model distinguishing the two lists.
+  const lastPanelRef           = useRef<'inputs' | 'outputs'>('inputs');
 
   // Created hidden (tauri.conf visible:false) — reveal after the first
   // paint so the user never sees the transparent shell fill in.
@@ -737,6 +740,7 @@ export default function ConvertApp() {
   //   • Ctrl/Cmd-click    → toggle this row (multi-select)
   //   • Shift-click       → range select from lastSelected → this
   const selectInput = useCallback((id: string, mode: 'single' | 'toggle' | 'range') => {
+    lastPanelRef.current = 'inputs';
     setInputs(prev => {
       if (mode === 'single') {
         lastSelectedRef.current = id;
@@ -774,6 +778,7 @@ export default function ConvertApp() {
   // outputs side selects every output regardless of status, so the
   // user can also batch-delete via the trash button if we add it later.
   const selectOutput = useCallback((id: string, mode: 'single' | 'toggle' | 'range') => {
+    lastPanelRef.current = 'outputs';
     setOutputs(prev => {
       if (mode === 'single') {
         lastSelectedOutputRef.current = id;
@@ -802,6 +807,28 @@ export default function ConvertApp() {
   const clearOutputSelection = useCallback(() => {
     setOutputs(prev => prev.map(it => ({ ...it, selected: false })));
     lastSelectedOutputRef.current = null;
+  }, []);
+
+  // Clearing an output only drops it from the session log — the file on
+  // disk is untouched. Gated to terminal rows: removing a converting /
+  // queued row would strand runOne's status poll (it waits on the row by
+  // id) and hang that pool worker. Cancel an in-flight row, don't clear it.
+  const isClearable = (s: OutputItem['status']) =>
+    s === 'done' || s === 'failed' || s === 'cancelled';
+
+  const removeOutput = useCallback((id: string) => {
+    setOutputs(prev => prev.filter(it => !(it.id === id && isClearable(it.status))));
+    if (lastSelectedOutputRef.current === id) lastSelectedOutputRef.current = null;
+  }, []);
+
+  const removeSelectedOutputs = useCallback(() => {
+    setOutputs(prev => prev.filter(it => !(it.selected && isClearable(it.status))));
+    lastSelectedOutputRef.current = null;
+  }, []);
+
+  const removeSelectedInputs = useCallback(() => {
+    setInputs(prev => prev.filter(it => !it.selected));
+    lastSelectedRef.current = null;
   }, []);
 
   // ─────────────────────────────────────────────────────────────────
@@ -1251,13 +1278,28 @@ export default function ConvertApp() {
         selectAll();
         return;
       }
+      if (e.key === 'Delete') {
+        // Clear the selected rows in whichever panel was last touched.
+        // Outputs only drop terminal rows from the log (file untouched);
+        // inputs drop the file from the convert queue.
+        if (lastPanelRef.current === 'outputs') {
+          if (outputsRef.current.some(it => it.selected && isClearable(it.status))) {
+            e.preventDefault();
+            removeSelectedOutputs();
+          }
+        } else if (inputsRef.current.some(it => it.selected)) {
+          e.preventDefault();
+          removeSelectedInputs();
+        }
+        return;
+      }
       if (e.key === 'Escape') {
         clearSelection();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectAll, clearSelection]);
+  }, [selectAll, clearSelection, removeSelectedOutputs, removeSelectedInputs]);
 
   return (
     <div
@@ -1979,6 +2021,18 @@ export default function ConvertApp() {
                         title="Show in folder"
                       >
                         <FolderOpen size={9} />
+                      </button>
+                    )}
+                    {/* Clear-from-log X — slides open on row hover, pushing
+                        the folder/retry glyph aside. Terminal rows only;
+                        clearing a converting row would strand runOne. */}
+                    {(it.status === 'done' || it.status === 'failed' || it.status === 'cancelled') && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeOutput(it.id); }}
+                        className="wd-slide-action text-zinc-600 hover:text-zinc-300 cursor-pointer"
+                        title="Clear from log (does not delete the file)"
+                      >
+                        <X size={9} />
                       </button>
                     )}
                   </div>
