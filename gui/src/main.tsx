@@ -28,17 +28,19 @@ function DialogLock() {
     : null;
 }
 
+// NO StrictMode — WAVdesk parity. The dev double-mount double-runs every
+// lifecycle effect (window reveals, job listeners, drag overlay spawn),
+// and in latch it spawned two competing video engines; keep the three
+// apps' React lifecycles identical.
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    {wd === 'dialog' ? (
-      <DialogApp />
-    ) : wd === 'drag-overlay' ? (
-      <DragOverlayApp />
-    ) : (
-      <>
-        <ConvertApp />
-        <DialogLock />
-      </>
-    )}
-  </React.StrictMode>,
+  wd === 'dialog' ? (
+    <DialogApp />
+  ) : wd === 'drag-overlay' ? (
+    <DragOverlayApp />
+  ) : (
+    <>
+      <ConvertApp />
+      <DialogLock />
+    </>
+  ),
 );
