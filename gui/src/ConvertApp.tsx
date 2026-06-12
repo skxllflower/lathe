@@ -126,9 +126,6 @@ interface InputItem {
   path:             string;
   name:             string;
   selected:         boolean;
-  // Most recent conversion status for this input — small status dot
-  // in the row. Cleared when the input is re-converted.
-  lastStatus?:      'converting' | 'done' | 'failed' | 'cancelled';
   // Source byte size, statted lazily after add. -1 = stat failed (sentinel
   // so the fetch effect doesn't retry forever); undefined = not yet statted.
   size?:            number;
@@ -392,6 +389,24 @@ export default function ConvertApp() {
   const outputsRef = useRef(outputs);
   outputsRef.current = outputs;
 
+  // Per-input status indicator, derived from the outputs that reference
+  // each input. Outputs are the source of truth. An earlier version
+  // mirrored status onto a separate InputItem.lastStatus field, but that
+  // mirror relied on a setState updater running synchronously (only true
+  // on React's eager-bailout path) and so randomly dropped terminal
+  // events mid-batch — leaving rows spinning forever after conversion.
+  // Priority: an active run (converting/queued) outranks any stale
+  // terminal status; among terminals the most recent output wins.
+  const inputStatus = useMemo(() => {
+    const rank = { done: 0, failed: 0, cancelled: 0, queued: 1, converting: 2 };
+    const map = new Map<string, OutputItem['status']>();
+    for (const o of outputs) {
+      const cur = map.get(o.inputId);
+      if (cur === undefined || rank[o.status] >= rank[cur]) map.set(o.inputId, o.status);
+    }
+    return map;
+  }, [outputs]);
+
   // Cancel flips this so pool workers stop pulling queued jobs; the
   // already-running ones get lathe_cancel'd individually.
   const batchCancelRef = useRef(false);
@@ -647,43 +662,21 @@ export default function ConvertApp() {
           else if (event.stage === 'failed') setBootstrap({ stage: 'failed', message: event.message });
           return;
         }
-        // Narrowed to the subset of OutputItem statuses that can
-        // appear as an InputItem.lastStatus — wrapper events never
-        // emit the synthetic 'queued' state, so the cast is safe.
-        let nextStatus: NonNullable<InputItem['lastStatus']> | null = null;
-        let outputInputId: string | null = null;
+        // Outputs are the source of truth; the input-row indicator is
+        // derived from them (see `inputStatus`), so there's nothing to
+        // mirror onto the inputs here.
         setOutputs(prev => prev.map(it => {
           if (it.jobId !== jobId) return it;
-          outputInputId = it.inputId;
-          if (event.type === 'progress') {
-            nextStatus = 'converting';
+          if (event.type === 'progress')
             return { ...it, status: 'converting', percent: event.percent ?? it.percent };
-          }
-          if (event.type === 'done') {
-            nextStatus = 'done';
+          if (event.type === 'done')
             return { ...it, status: 'done', percent: 100, output: event.output };
-          }
-          if (event.type === 'cancelled') {
-            nextStatus = 'cancelled';
+          if (event.type === 'cancelled')
             return { ...it, status: 'cancelled' };
-          }
-          if (event.type === 'error') {
-            nextStatus = 'failed';
+          if (event.type === 'error')
             return { ...it, status: 'failed', error: event.message };
-          }
           return it;
         }));
-        // Mirror the latest status onto the source input row so the
-        // user sees per-input progress without scanning the outputs
-        // panel. Captured outside setOutputs so the closure sees the
-        // current event's outcome.
-        if (outputInputId && nextStatus) {
-          const inputId = outputInputId;
-          const status  = nextStatus;
-          setInputs(prev => prev.map(inp =>
-            inp.id === inputId ? { ...inp, lastStatus: status } : inp
-          ));
-        }
       });
     })();
     return () => { if (unlisten) unlisten(); };
@@ -862,13 +855,9 @@ export default function ConvertApp() {
       selected:  false,
       srcSize:   inp.size,
     }));
+    // The new 'queued' outputs make `inputStatus` reflect this run
+    // immediately — active states outrank any stale terminal one.
     setOutputs(prev => [...prev, ...newOutputs]);
-    // Clear lastStatus on the inputs being re-converted so the row
-    // status indicator reflects the NEW run, not the previous one.
-    setInputs(prev => prev.map(inp => {
-      const beingConverted = selected.some(s => s.id === inp.id);
-      return beingConverted ? { ...inp, lastStatus: undefined } : inp;
-    }));
 
     // Pre-dedupe target paths within the batch — two same-stem inputs
     // (a/kick.wav + b/kick.wav → custom folder) resolve the same target,
@@ -894,8 +883,6 @@ export default function ConvertApp() {
       const jobId = uid();
       setOutputs(prev => prev.map(q =>
         q.id === out.id ? { ...q, jobId, status: 'converting', percent: 0 } : q));
-      setInputs(prev => prev.map(inp =>
-        inp.id === out.inputId ? { ...inp, lastStatus: 'converting' } : inp));
       try {
         await invoke('lathe_convert', {
           windowLabel: 'main',
@@ -933,8 +920,6 @@ export default function ConvertApp() {
       } catch (err: any) {
         setOutputs(prev => prev.map(q =>
           q.id === out.id ? { ...q, status: 'failed', error: String(err?.message ?? err) } : q));
-        setInputs(prev => prev.map(inp =>
-          inp.id === out.inputId ? { ...inp, lastStatus: 'failed' } : inp));
       }
     };
 
@@ -951,8 +936,6 @@ export default function ConvertApp() {
         if (batchCancelRef.current) {
           setOutputs(prev => prev.map(q =>
             q.id === out.id ? { ...q, status: 'cancelled' } : q));
-          setInputs(prev => prev.map(inp =>
-            inp.id === out.inputId ? { ...inp, lastStatus: 'cancelled' } : inp));
           continue;
         }
         await runOne(out);
@@ -988,8 +971,6 @@ export default function ConvertApp() {
     const targetPath = buildOutputPath(out.inputPath, out.settings);
     setOutputs(prev => prev.map(q =>
       q.id === id ? { ...q, jobId, status: 'converting', percent: 0, error: undefined, output: undefined } : q));
-    setInputs(prev => prev.map(inp =>
-      inp.id === out.inputId ? { ...inp, lastStatus: 'converting' } : inp));
     setRunning(true);
     try {
       await invoke('lathe_convert', {
@@ -1414,12 +1395,21 @@ export default function ConvertApp() {
                     removeInput(it.id);
                   }}
                 >
-                  {/* Status indicator */}
+                  {/* Status indicator — derived from this input's outputs.
+                      Spinner only while a run is active (converting) or
+                      pending in the batch (queued); terminal runs show a
+                      glyph, and inputs with no outputs show nothing. */}
                   <span className="shrink-0 w-2.5 flex items-center justify-center">
-                    {it.lastStatus === 'converting' && <Loader2 size={9} className="animate-spin text-zinc-300" />}
-                    {it.lastStatus === 'done'       && <CheckCircle2 size={9} className="text-emerald-400" />}
-                    {it.lastStatus === 'failed'     && <XCircle size={9} className="text-rose-400" />}
-                    {it.lastStatus === 'cancelled'  && <XCircle size={9} className="text-zinc-500" />}
+                    {(() => {
+                      switch (inputStatus.get(it.id)) {
+                        case 'converting': return <Loader2 size={9} className="animate-spin text-zinc-300" />;
+                        case 'queued':     return <Loader2 size={9} className="animate-spin text-zinc-600" />;
+                        case 'done':       return <CheckCircle2 size={9} className="text-emerald-400" />;
+                        case 'failed':     return <XCircle size={9} className="text-rose-400" />;
+                        case 'cancelled':  return <XCircle size={9} className="text-zinc-500" />;
+                        default:           return null;
+                      }
+                    })()}
                   </span>
                   <span className="shrink-0 text-zinc-500 flex items-center">
                     {kind === 'audio' && <Music     size={9} />}
