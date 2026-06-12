@@ -402,6 +402,12 @@ export default function ConvertApp() {
   const lastSelectedRef        = useRef<string | null>(null);
   const lastSelectedOutputRef  = useRef<string | null>(null);
 
+  // Created hidden (tauri.conf visible:false) — reveal after the first
+  // paint so the user never sees the transparent shell fill in.
+  useEffect(() => {
+    requestAnimationFrame(() => { void getCurrentWindow().show(); });
+  }, []);
+
   // Main-window close owns full app teardown: the pre-spawned drag
   // overlay would otherwise keep a headless app alive. An in-flight
   // batch prompts first — closing cancels it (lathe removes partials).
@@ -1428,7 +1434,7 @@ export default function ConvertApp() {
                   )}
                   <button
                     onClick={(e) => { e.stopPropagation(); removeInput(it.id); }}
-                    className="text-zinc-600 hover:text-zinc-300 opacity-0 group-hover:opacity-100 transition-none"
+                    className="wd-slide-action text-zinc-600 hover:text-zinc-300"
                     title="Remove from inputs"
                   >
                     <X size={10} />

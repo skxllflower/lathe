@@ -14,6 +14,7 @@
       {
         "label": "main",
         "title": "Lathe",
+        "visible": false,
         "width": 860,
         "height": 560,
         "minWidth": 680,
