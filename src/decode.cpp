@@ -525,8 +525,37 @@ int decode_server(const std::string& input, int height, double start_sec) {
     std::fflush(stdout);  // flush each frame; backpressure paces the decode
     return true;
   };
+
+  // Small-loop frame cache: every wrap re-seeks to the keyframe before
+  // the in-point and drop-decodes up to it — for a tiny region that
+  // costs more than the region lasts and the stream starves (frozen
+  // video each cycle). Cache one full rendered cycle and replay it at
+  // wraps; any seek or bounds change invalidates and decode resumes.
+  constexpr double kLoopCacheMaxSec   = 2.0;
+  constexpr size_t kLoopCacheMaxBytes = 128ull * 1024 * 1024;
+  std::vector<std::pair<double, std::vector<uint8_t>>> loopCache;
+  bool   loopCacheOn    = false;  // capturing this cycle
+  bool   loopCacheReady = false;  // full cycle stored — replay at wraps
+  double loopCacheIn = -1.0, loopCacheOut = -1.0;
+  auto loop_cache_reset = [&]() {
+    loopCache.clear();
+    loopCacheOn = false;
+    loopCacheReady = false;
+    loopCacheIn = -1.0;
+    loopCacheOut = -1.0;
+  };
+
   auto emit_frame = [&](double ft) -> bool {
     if (!render_frame(scratch.data())) return true;  // bad frame — skip, keep streaming
+    if (loopCacheOn) {
+      if (loopIn.load() != loopCacheIn || loopOut.load() != loopCacheOut) {
+        loop_cache_reset();  // bounds moved mid-capture
+      } else if ((loopCache.size() + 1) * frameBytes > kLoopCacheMaxBytes) {
+        loop_cache_reset();  // region too heavy at this resolution
+      } else if (ft >= loopCacheIn - 0.25) {
+        loopCache.emplace_back(ft, std::vector<uint8_t>(scratch.data(), scratch.data() + frameBytes));
+      }
+    }
     return write_frame(ft, scratch.data());
   };
 
@@ -643,6 +672,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
       }
       if (!write_chunk_header(sk, 0)) break;  // seek marker
       std::fflush(stdout);
+      loop_cache_reset();  // a seek invalidates the cached cycle
     }
     if (dirState < 0) {
       if (paused.load() || revHead <= 0.0005) {
@@ -686,6 +716,40 @@ int decode_server(const std::string& input, int height, double start_sec) {
       // pts) while the consumer plays out its buffered tail.
       wrapReq = false;
       const double lIn = loopIn.load();
+      const double lOut = loopOut.load();
+      // A capture that survived a full cycle is complete.
+      if (loopCacheOn && !loopCache.empty() && lIn == loopCacheIn && lOut == loopCacheOut) {
+        loopCacheOn = false;
+        loopCacheReady = true;
+      }
+      // Replay path: serve whole cycles from the cache — no GOP re-decode.
+      // Stays responsive: pause idles between frames, and any close/seek/
+      // bounds change bails back to the normal decode path.
+      if (loopCacheReady && lIn == loopCacheIn && lOut == loopCacheOut) {
+        bool completed = true;
+        for (const auto& f : loopCache) {
+          while (paused.load() && !wantClose.load() && seekReq.load() < 0.0) sleep_ms(8);
+          if (wantClose.load() || seekReq.load() >= 0.0 ||
+              loopIn.load() != loopCacheIn || loopOut.load() != loopCacheOut) {
+            completed = false;
+            break;
+          }
+          if (!write_frame(f.first, f.second.data())) {
+            wantClose.store(true);
+            completed = false;
+            break;
+          }
+        }
+        if (completed) wrapReq = true;  // next cycle replays again
+        continue;
+      }
+      // First wrap of a small region: arm the capture for the coming cycle.
+      if (!loopCacheReady && lOut > lIn + 0.01 && (lOut - lIn) <= kLoopCacheMaxSec) {
+        loop_cache_reset();
+        loopCacheOn = true;
+        loopCacheIn = lIn;
+        loopCacheOut = lOut;
+      }
       av_seek_frame(fmt, vs, static_cast<int64_t>(lIn / av_q2d(st->time_base)),
                     AVSEEK_FLAG_BACKWARD);
       avcodec_flush_buffers(dec);
