@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "default permissions for the Lathe window",
-  "windows": ["main", "dialog-*", "drag-overlay"],
+  "windows": ["main", "dialog-*", "about", "drag-overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

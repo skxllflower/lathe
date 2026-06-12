@@ -31,11 +31,12 @@ import {
   X, Plus, FolderOpen, Trash2, ArrowRightLeft,
   CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, CloudDownload,
   Link2, Link2Off, RotateCcw, FolderInput, Save, CheckSquare,
-  Music, Image as ImageIcon, Film, Minus, Check,
+  Music, Image as ImageIcon, Film, Minus, Check, Info,
 } from 'lucide-react';
 import { useTheme, THEME_BG } from './theme';
 import { startOverlayDrag, endOverlayDrag } from './internalDragHandoff';
 import { askPromptInWindow, confirmInWindow } from './dialogs';
+import { openAboutWindow } from './aboutWindow';
 import { WdSelect, type WdSelectOption } from './WdSelect';
 import {
   isAudioPath, isImagePath, isVideoPath, isRawPath,
@@ -1892,11 +1893,11 @@ export default function ConvertApp() {
                 return (
                   <div
                     key={it.id}
-                    className={`group flex items-center gap-1.5 px-1.5 py-1 text-[0.625rem] cursor-pointer ${
+                    className={`group flex items-center gap-1.5 px-1.5 py-1 text-[0.625rem] ${
                       it.selected
                         ? 'bg-zinc-800/70 text-zinc-100'
                         : 'hover:bg-zinc-900/60'
-                    } ${dragOK ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                    } ${dragOK ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
                     title={it.error ?? it.output ?? it.inputPath}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1962,7 +1963,7 @@ export default function ConvertApp() {
                       <button
                         onClick={() => retryOutput(it.id)}
                         disabled={running}
-                        className="text-zinc-500 hover:text-zinc-200 disabled:opacity-30 transition-none shrink-0"
+                        className="text-zinc-500 hover:text-zinc-200 disabled:opacity-30 transition-none shrink-0 cursor-pointer"
                         title={it.status === 'failed' ? `Retry: ${it.error ?? 'failed'}` : 'Retry cancelled item'}
                       >
                         <RotateCcw size={9} />
@@ -1974,7 +1975,7 @@ export default function ConvertApp() {
                           e.stopPropagation();
                           void invoke('os_reveal_path', { path: it.output! });
                         }}
-                        className="text-zinc-600 hover:text-zinc-300 transition-none shrink-0"
+                        className="text-zinc-600 hover:text-zinc-300 transition-none shrink-0 cursor-pointer"
                         title="Show in folder"
                       >
                         <FolderOpen size={9} />
@@ -2036,6 +2037,16 @@ export default function ConvertApp() {
                 {batchInfo.finished}/{batchInfo.total} · {batchInfo.overall.toFixed(0)}%
               </span>
             )}
+            {/* About — info glyph opposite the lathe.exe chip; hover
+                reveals the "ABOUT" label, click opens the About window. */}
+            <button
+              onClick={() => { void openAboutWindow(); }}
+              className="wd-about ml-auto flex items-center gap-1 text-zinc-600 hover:text-zinc-300 shrink-0 cursor-pointer"
+              title="About Lathe"
+            >
+              <span className="wd-about-label uppercase tracking-wider text-[0.5rem]">About</span>
+              <Info size={10} className="shrink-0" />
+            </button>
           </div>
 
           {/* OUTPUTS CELL */}

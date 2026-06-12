@@ -2,13 +2,15 @@ import React, { useSyncExternalStore } from 'react';
 import ReactDOM from 'react-dom/client';
 import ConvertApp from './ConvertApp';
 import DialogApp from './DialogApp';
+import AboutApp from './AboutApp';
 import DragOverlayApp from './DragOverlayApp';
 import { subscribeOpenDialogs, getOpenDialogCount } from './dialogWindows';
 import './styles.css';
 
 // Window routing by query param — the main window is the converter,
 // `?wd=dialog` is a spawned dialog window (dialogWindows.ts),
-// `?wd=drag-overlay` is the pre-spawned drag-chip surface (lib.rs setup).
+// `?wd=about` is the About window (aboutWindow.ts), `?wd=drag-overlay`
+// is the pre-spawned drag-chip surface (lib.rs setup).
 const wd = new URLSearchParams(window.location.search).get('wd');
 
 // No native browser context menu anywhere except text fields.
@@ -35,6 +37,8 @@ function DialogLock() {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   wd === 'dialog' ? (
     <DialogApp />
+  ) : wd === 'about' ? (
+    <AboutApp />
   ) : wd === 'drag-overlay' ? (
     <DragOverlayApp />
   ) : (
