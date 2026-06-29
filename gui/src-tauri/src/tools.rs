@@ -212,6 +212,17 @@ fn run_reader(
         });
         let _ = app.emit_to(window_label.as_str(), event_name.as_str(), final_payload);
 
+        // Overwrite-in-place: on a CLEAN exit, remove the original source a
+        // format change left beside the new file. Never on a non-zero exit —
+        // the original is the user's only copy if the convert failed/cancelled.
+        if let Ok(mut m) = lathe_overwrite_originals().lock() {
+            if let Some(orig) = m.remove(&job_id) {
+                if exit_code == 0 {
+                    let _ = std::fs::remove_file(&orig);
+                }
+            }
+        }
+
         if let Ok(mut map) = jobs.lock() {
             map.remove(&job_id);
         }
@@ -256,6 +267,15 @@ fn push_lathe_options(args: &mut Vec<String>, o: &LatheOptions) {
 fn lathe_outputs() -> &'static Mutex<HashMap<String, String>> {
     static OUTPUTS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     OUTPUTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// Original source path per overwrite-in-place job, removed on SUCCESS only. A
+// format change writes <stem>.<newext> beside the source, so "overwrite in
+// place" must delete the differently-named original — but never on
+// failure/cancel (it's the user's only copy).
+fn lathe_overwrite_originals() -> &'static Mutex<HashMap<String, String>> {
+    static ORIG: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    ORIG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 // Pick a non-colliding output path: returns `output` if free, else
@@ -304,6 +324,16 @@ pub async fn lathe_convert(
     if !is_overwrite {
         if let Ok(mut m) = lathe_outputs().lock() {
             m.insert(job_id.clone(), output.clone());
+        }
+    }
+
+    // Overwrite-in-place across a format change leaves the differently-named
+    // original beside the new file — record it so run_reader removes it on a
+    // clean exit (same-path same-format already clobbered via ffmpeg -y, so the
+    // path compare keeps us from deleting the file we just wrote).
+    if is_overwrite && !input.eq_ignore_ascii_case(output.as_str()) {
+        if let Ok(mut m) = lathe_overwrite_originals().lock() {
+            m.insert(job_id.clone(), input.clone());
         }
     }
 
