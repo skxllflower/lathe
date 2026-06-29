@@ -22,6 +22,7 @@
 // We overlay a small "Downloading ffmpeg…" status during that phase.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import appIcon from './assets/app-icon.svg';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { invoke } from '@tauri-apps/api/core';
@@ -708,6 +709,28 @@ export default function ConvertApp() {
     return () => { if (unlisten) unlisten(); };
   }, [addDropped]);
 
+  // Explorer "Convert with Lathe ▸ <fmt>" right-click verb: a cold start queues
+  // the file + format (claimed here via take_launch_target); a second launch
+  // hands the same payload to this already-open window via lathe-open-convert.
+  // Either way, seed the input + preset the format.
+  useEffect(() => {
+    const apply = (input?: string, fmt?: string) => {
+      if (input) addPaths([input]);
+      if (fmt && FORMATS.includes(fmt as Format)) setFormat(fmt as Format);
+    };
+    void (async () => {
+      try {
+        const t = await invoke<{ input: string; format: string } | null>('take_launch_target');
+        if (t) apply(t.input, t.format);
+      } catch { /* no queued target */ }
+    })();
+    let unlisten: UnlistenFn | null = null;
+    void listen<{ input: string; format: string }>('lathe-open-convert', (e) => {
+      apply(e.payload.input, e.payload.format);
+    }).then((u) => { unlisten = u; });
+    return () => { if (unlisten) unlisten(); };
+  }, [addPaths]);
+
   // ─────────────────────────────────────────────────────────────────
   // Input mutations
   // ─────────────────────────────────────────────────────────────────
@@ -1311,7 +1334,7 @@ export default function ConvertApp() {
         data-tauri-drag-region
         className="h-7 bg-zinc-950 border-b border-zinc-800 flex items-center px-2 shrink-0"
       >
-        <ArrowRightLeft size={11} className="text-zinc-400 mr-1.5" />
+        <img src={appIcon} alt="" draggable={false} className="w-3.5 h-3.5 mr-1.5" />
         <span
           data-tauri-drag-region
           className="text-[0.625rem] font-bold uppercase tracking-tight text-zinc-300"

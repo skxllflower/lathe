@@ -8,23 +8,75 @@ mod job_object;
 mod native_drag_chip;
 mod os_drag;
 mod tools;
+mod registry;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+// Explorer "Convert with Lathe" right-click verb routing. A cold start parses
+// the queued file + format from argv and stashes it here for the frontend to
+// claim via take_launch_target; an already-running instance re-parses the
+// second launch's argv in the single-instance callback and emits an event.
+static LAUNCH_TARGET: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+fn parse_convert_arg(argv: &[String]) -> Option<(String, String)> {
+    let mut input: Option<String> = None;
+    let mut format: Option<String> = None;
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--convert" => input = it.next().cloned(),
+            "--format" => format = it.next().cloned(),
+            _ => {}
+        }
+    }
+    match (input, format) {
+        (Some(i), Some(f)) => Some((i, f)),
+        _ => None,
+    }
+}
+
+/// Cold-start handoff: the frontend claims a queued Explorer convert target
+/// ({ input, format }) once on mount, then seeds the input + presets the format.
+#[tauri::command]
+fn take_launch_target() -> Option<serde_json::Value> {
+    LAUNCH_TARGET
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+        .map(|(input, format)| serde_json::json!({ "input": input, "format": format }))
+}
 
 pub fn run() {
     // Kill-on-close job from the very start, so lathe.exe + its ffmpeg
     // children (and the WebView2 tree) can never outlive a crash.
     job_object::assign_self();
 
+    // Cold-start Explorer convert verb: stash the file + format for the frontend
+    // to claim on mount (avoids racing the not-yet-ready webview).
+    if let Some(t) = parse_convert_arg(&std::env::args().collect::<Vec<_>>()) {
+        if let Ok(mut g) = LAUNCH_TARGET.lock() {
+            *g = Some(t);
+        }
+    }
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            use tauri::Manager;
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::{Manager, Emitter};
             if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
                 let _ = w.set_focus();
+            }
+            // A second launch carrying the Explorer "Convert with Lathe" verb
+            // hands its file + format to this already-open window.
+            if let Some((input, format)) = parse_convert_arg(&argv) {
+                let _ = app.emit("lathe-open-convert", serde_json::json!({ "input": input, "format": format }));
             }
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Self-register our CLI core so WAVdesk can discover this install.
+            registry::register_self();
             // Pre-spawn the drag-overlay window hidden — it's both the OS
             // drag SOURCE (see os_drag.rs) and the chip's render surface.
             // Recipe mirrors WAVdesk's: transparent, AOT, passthrough,
@@ -60,6 +112,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            take_launch_target,
             tools::lathe_convert,
             tools::lathe_cancel,
             tools::lathe_collect_dir,

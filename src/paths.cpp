@@ -66,7 +66,21 @@ constexpr const char* kSharedDir = "Shared";
 constexpr const char* kSharedDir = "shared";
 #endif
 
-fs::path shared_bin_path() { return vendor_root() / kSharedDir / "bin"; }
+// Machine-wide shared root: ProgramData\Vacant Systems on Windows (user-writable
+// via the installer's icacls grant) so shared tooling (ffmpeg) and the
+// cross-product registry live out of per-user AppData while staying writable by
+// the unelevated app. macOS/Linux keep the shared tree under the vendor root.
+fs::path shared_root() {
+#ifdef _WIN32
+  const char* pd = std::getenv("ProgramData");
+  if (pd) return path_from_utf8(pd) / "Vacant Systems";
+  return fs::path("C:/ProgramData") / "Vacant Systems";  // fallback
+#else
+  return vendor_root();
+#endif
+}
+
+fs::path shared_bin_path() { return shared_root() / kSharedDir / "bin"; }
 
 std::string json_escape(const std::string& s) {
   std::string out;

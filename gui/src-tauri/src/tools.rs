@@ -65,6 +65,9 @@ fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
+            // Bundled core: tauri resources install into <install>/coredist/
+            // next to the GUI exe (NSIS resource_dir == install root).
+            out.push(dir.join("coredist").join(&exe_name));
             // Installed layout: the CLI ships right next to this GUI exe.
             out.push(dir.join(&exe_name));
             if let Some(vendor) = dir.parent() {
@@ -133,6 +136,12 @@ fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
         tool_dir_name(name),
         format!(r"%USERPROFILE%\Dev\{}\build", name),
     ))
+}
+
+/// Resolve this app's own CLI core (lathe.exe) for self-registration into the
+/// shared discovery manifest. Returns None if it can't be found.
+pub(crate) fn resolve_self_core() -> Option<PathBuf> {
+    find_tool_binary("lathe", "").ok()
 }
 
 fn spawn_tool(

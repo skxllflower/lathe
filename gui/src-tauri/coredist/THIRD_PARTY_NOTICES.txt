@@ -1,0 +1,47 @@
+THIRD-PARTY NOTICES for lathe
+=============================
+
+FFmpeg (shared libraries: avformat, avcodec, avutil, swscale, swresample)
+-------------------------------------------------------------------------
+The DLLs distributed alongside lathe.exe (avformat-*.dll, avcodec-*.dll,
+avutil-*.dll, swscale-*.dll, swresample-*.dll) are an unmodified LGPL build
+of FFmpeg, dynamically linked by lathe.
+
+  License:  GNU Lesser General Public License, version 2.1 or later
+            https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+  Project:  https://ffmpeg.org
+
+Corresponding source code: these binaries are the
+"ffmpeg-master-latest-win64-lgpl-shared" build published by the BtbN
+FFmpeg-Builds project, which publishes the exact corresponding FFmpeg
+source snapshot and build scripts with every release:
+
+  https://github.com/BtbN/FFmpeg-Builds/releases
+  https://github.com/BtbN/FFmpeg-Builds
+
+In accordance with the LGPL, the FFmpeg libraries are dynamically linked
+and user-replaceable: you may substitute your own compatible builds of
+these DLLs next to lathe.exe.
+
+FFmpeg command-line executable (ffmpeg.exe)
+-------------------------------------------
+Separately from the libraries above, lathe invokes a stand-alone ffmpeg.exe
+as an external subprocess for encode/convert operations. That executable is
+a GPL build of FFmpeg (https://www.gnu.org/licenses/gpl-3.0.html), obtained
+and stored independently (see the application's shared tools directory). It
+is mere aggregation: it is not linked into lathe, and its source is likewise
+available from the projects above.
+
+LibRaw
+------
+Camera-RAW decoding in lathe uses LibRaw, statically linked, unmodified.
+LibRaw is dual-licensed; lathe uses it under the Common Development and
+Distribution License (CDDL) 1.0.
+
+  License:  CDDL 1.0 — https://opensource.org/license/cddl-1-0
+            (alternatively LGPL 2.1: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
+  Project:  https://www.libraw.org
+  Source:   https://github.com/LibRaw/LibRaw (version 0.21.4, unmodified)
+
+LibRaw is Copyright (C) 2008-2024 LibRaw LLC, and incorporates code from
+dcraw.c by Dave Coffin.
