@@ -119,9 +119,15 @@ fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
             return Ok(pb);
         }
     }
-    for cand in dev_tool_fallbacks(name) {
-        if cand.exists() {
-            return Ok(cand);
+    // Dev builds prefer a locally-built binary; a RELEASE/installed build must
+    // NOT — a stray %USERPROFILE%\Dev\<tool>\build checkout (possibly a stale,
+    // pre-feature core) would otherwise SHADOW the freshly-installed coredist
+    // binary and run old/missing commands.
+    if cfg!(debug_assertions) {
+        for cand in dev_tool_fallbacks(name) {
+            if cand.exists() {
+                return Ok(cand);
+            }
         }
     }
     for cand in installed_tool_fallbacks(name) {
