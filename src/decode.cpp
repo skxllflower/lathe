@@ -173,10 +173,26 @@ struct CtlCtx {
   std::atomic<bool>* paused;
   std::atomic<double>* seekReq;
   std::atomic<int>* dirReq;        // playback direction riding the seek op (1 / -1)
+  // Number of seek COMMANDS received but not yet consumed by the main loop.
+  // seekReq alone coalesces (two commands landing within one servicing window
+  // collapse to the last value), but consumers count one SEEK MARKER per
+  // command they sent — a deficit leaves their stale-frame gate stuck open
+  // forever (the audio daemon then discards PCM permanently: dead sound).
+  // The main loop services the LAST target but emits one marker per command.
+  std::atomic<int>* seekCount;
   std::atomic<double>* loopIn;     // gapless loop region; loopOut <= loopIn = off
   std::atomic<double>* loopOut;
   std::atomic<bool>* tonemap;      // HDR→SDR tone-mapping (video server only)
 };
+
+uint64_t now_ms() {
+#ifdef _WIN32
+  return GetTickCount64();
+#else
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
+}
 
 // Reads JSON-line commands on stdin and drives the atomics. Runs on its own
 // thread; blocks on stdin and exits when the stream closes.
@@ -188,10 +204,12 @@ void ctl_loop(CtlCtx* c) {
       if (!line.empty()) {
         if (cmd_is(line, "close")) { c->wantClose->store(true); break; }
         else if (cmd_is(line, "seek")) {
-          // Direction lands BEFORE the seek time so the main loop can't see
-          // the new seek with the old direction.
+          // Direction and target land BEFORE the count so the main loop, on
+          // seeing count > 0, always reads values at least as new as the
+          // commands it consumed.
           c->dirReq->store(cmd_num(line, "dir", 1.0) < 0 ? -1 : 1);
           c->seekReq->store(cmd_num(line, "sec", 0.0));
+          c->seekCount->fetch_add(1);
         }
         else if (cmd_is(line, "loop")) {
           // In lands before out: a torn read sees out<=in (= loop off) rather
@@ -456,10 +474,11 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
   std::atomic<bool> paused{false};
   std::atomic<double> seekReq{-1.0};
   std::atomic<int> dirReq{1};
+  std::atomic<int> seekCount{0};
   std::atomic<double> loopIn{0.0};
   std::atomic<double> loopOut{0.0};
   std::atomic<bool> tonemap{hdrKind != 0};  // default ON for HDR sources
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut, &tonemap };
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &seekCount, &loopIn, &loopOut, &tonemap };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -467,6 +486,8 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
 #endif
 
   double dropUntil = -1.0;  // frame-accurate seek: drop frames before this time
+  uint64_t seekT0 = 0;      // seek-servicing timer (0 = no measurement pending)
+  double seekTarget = 0.0;
   bool eof = false;
   bool drained = false;     // EOF flush packet sent (reset by seek)
   bool oneShot = false;     // chase the exact target frame after a seek even
@@ -545,6 +566,17 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
   };
   std::vector<uint8_t> scratch(frameBytes);
   auto write_frame = [&](double ft, const uint8_t* data) -> bool {
+    if (seekT0) {
+      // First frame after a seek: how long the servicing (keyframe seek +
+      // decode-forward) actually took. Gated — only slow seeks are worth a line.
+      const uint64_t dt = now_ms() - seekT0;
+      seekT0 = 0;
+      if (dt > 400) {
+        std::fprintf(stderr, "decode-server: video seek to %.2fs served first frame after %llu ms\n",
+                     seekTarget, static_cast<unsigned long long>(dt));
+        std::fflush(stderr);
+      }
+    }
     if (!write_chunk_header(ft, frameBytes)) return false;
     if (std::fwrite(data, 1, frameBytes, stdout) != frameBytes) return false;
     std::fflush(stdout);  // flush each frame; backpressure paces the decode
@@ -620,7 +652,7 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
       // Stay responsive mid-packet. Don't break on pause here: abandoning a
       // half-drained packet makes the next send_packet EAGAIN-fail and drops
       // a frame on resume; the outer loop gates further packets instead.
-      if (wantClose.load() || seekReq.load() >= 0.0) break;
+      if (wantClose.load() || seekCount.load() > 0) break;
     }
     if (hwActive && !hwFellBack && rr < 0 && rr != AVERROR(EAGAIN) && rr != AVERROR_EOF) {
       hwFaultReq = true; hwFaultErr = rr;
@@ -644,7 +676,7 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
     std::deque<std::pair<double, std::vector<uint8_t>>> kept;
     bool past = false, drainSent = false;
     while (!past) {
-      if (wantClose.load() || seekReq.load() >= 0.0) return;  // preempted
+      if (wantClose.load() || seekCount.load() > 0) return;  // preempted
       const int rr = drainSent ? -1 : av_read_frame(fmt, pkt);
       if (rr < 0) {
         if (drainSent) break;
@@ -673,7 +705,7 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
     }
     if (kept.empty()) { revHead = 0.0; return; }  // nothing earlier — at the start
     for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
-      if (wantClose.load() || seekReq.load() >= 0.0 || paused.load()) return;
+      if (wantClose.load() || seekCount.load() > 0 || paused.load()) return;
       if (!write_frame(it->first, it->second.data())) { wantClose.store(true); return; }
       revHead = it->first;  // progressive: a mid-chunk preemption stays consistent
     }
@@ -748,9 +780,22 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
       std::fflush(stderr);
       break;  // both hw and software failed — exit as before
     }
-    const double sk = seekReq.exchange(-1.0);
-    if (sk >= 0.0) {
+    if (seekCount.load() > 0) {
+      // ONE marker per received command (see CtlCtx::seekCount); the count is
+      // consumed FIRST so seekReq/dirReq are at least as new as the commands
+      // counted. Markers go out BEFORE the (possibly slow) av_seek_frame —
+      // everything already written predates the seek either way, and consumers
+      // un-gate at the marker instead of sitting suppressed through a long
+      // index scan.
+      const int nSeeks = seekCount.exchange(0);
+      const double sk = seekReq.load();
       dirState = dirReq.load();
+      bool markerFail = false;
+      for (int i = 0; i < nSeeks && !markerFail; ++i) markerFail = !write_chunk_header(sk, 0);
+      if (markerFail) break;  // seek marker(s)
+      std::fflush(stdout);
+      seekT0 = now_ms();
+      seekTarget = sk;
       if (dirState < 0) {
         revHead = sk;
         dropUntil = -1.0;
@@ -767,8 +812,6 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
         oneShot = true;
         preview = true;
       }
-      if (!write_chunk_header(sk, 0)) break;  // seek marker
-      std::fflush(stdout);
       loop_cache_reset();  // a seek invalidates the cached cycle
     }
     if (dirState < 0) {
@@ -830,8 +873,8 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
       if (loopCacheReady && lIn == loopCacheIn && lOut == loopCacheOut) {
         bool completed = true;
         for (const auto& f : loopCache) {
-          while (paused.load() && !wantClose.load() && seekReq.load() < 0.0) sleep_ms(8);
-          if (wantClose.load() || seekReq.load() >= 0.0 ||
+          while (paused.load() && !wantClose.load() && seekCount.load() == 0) sleep_ms(8);
+          if (wantClose.load() || seekCount.load() > 0 ||
               loopIn.load() != loopCacheIn || loopOut.load() != loopCacheOut) {
             completed = false;
             break;
@@ -942,10 +985,11 @@ int decode_server_audio(const std::string& input, double start_sec) {
   std::atomic<bool> paused{false};
   std::atomic<double> seekReq{-1.0};
   std::atomic<int> dirReq{1};
+  std::atomic<int> seekCount{0};
   std::atomic<double> loopIn{0.0};
   std::atomic<double> loopOut{0.0};
   std::atomic<bool> tonemapUnused{false};  // video-only op; absorbed here
-  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &loopIn, &loopOut, &tonemapUnused };
+  CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &seekCount, &loopIn, &loopOut, &tonemapUnused };
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -953,12 +997,26 @@ int decode_server_audio(const std::string& input, double start_sec) {
 #endif
 
   double dropUntil = -1.0;
+  uint64_t seekT0 = 0;      // seek-servicing timer (0 = no measurement pending)
+  double seekTarget = 0.0;
   bool eof = false;
   bool drained = false;     // EOF flush packet sent (reset by seek)
   bool wrapReq = false;     // gapless loop: jump back to the in-point next
   double trimUntil = -1.0;  // sample-trim the straddling frame after a wrap
   int dirState = 1;         // 1 = forward, -1 = reverse (sample-reversed chunks)
   double revHead = 0.0;     // reverse playback position (descending)
+  // First PCM after a seek: log slow servicing (a cue-less long file can cost
+  // seconds in av_seek_frame's index scan — invisible in the field otherwise).
+  auto note_seek_served = [&]() {
+    if (!seekT0) return;
+    const uint64_t dt = now_ms() - seekT0;
+    seekT0 = 0;
+    if (dt > 400) {
+      std::fprintf(stderr, "decode-server: audio seek to %.2fs served first PCM after %llu ms\n",
+                   seekTarget, static_cast<unsigned long long>(dt));
+      std::fflush(stderr);
+    }
+  };
   auto do_seek = [&](double t) {
     const int64_t ts = static_cast<int64_t>(t / av_q2d(st->time_base));
     av_seek_frame(fmt, as, ts, AVSEEK_FLAG_BACKWARD);
@@ -989,7 +1047,7 @@ int decode_server_audio(const std::string& input, double start_sec) {
     double accStart = -1.0;
     bool past = false, drainSent = false;
     while (!past) {
-      if (wantClose.load() || seekReq.load() >= 0.0) return;  // preempted
+      if (wantClose.load() || seekCount.load() > 0) return;  // preempted
       const int rr = drainSent ? -1 : av_read_frame(fmt, pkt);
       if (rr < 0) {
         if (drainSent) break;
@@ -1035,6 +1093,7 @@ int decode_server_audio(const std::string& input, double start_sec) {
       float* d = rev.data() + static_cast<size_t>(i) * outCh;
       for (int c = 0; c < outCh; ++c) d[c] = s[c];
     }
+    note_seek_served();
     const uint32_t bytes = static_cast<uint32_t>(take) * outCh * sizeof(float);
     if (!write_chunk_header(chunkEnd, bytes) ||
         std::fwrite(rev.data(), 1, bytes, stdout) != bytes) {
@@ -1095,6 +1154,7 @@ int decode_server_audio(const std::string& input, double start_sec) {
         wrap = true;
       }
       if (n > 0) {
+        note_seek_served();
         const uint32_t bytes = static_cast<uint32_t>(n) * outCh * sizeof(float);
         if (!write_chunk_header(pts, bytes) ||
             std::fwrite(data, 1, bytes, stdout) != bytes) {
@@ -1104,7 +1164,7 @@ int decode_server_audio(const std::string& input, double start_sec) {
         std::fflush(stdout);  // backpressure paces the decode
       }
       if (wrap) { wrapReq = true; break; }
-      if (wantClose.load() || seekReq.load() >= 0.0) break;
+      if (wantClose.load() || seekCount.load() > 0) break;
     }
   };
 
@@ -1112,19 +1172,28 @@ int decode_server_audio(const std::string& input, double start_sec) {
   if (start_sec > 0.0) do_seek(start_sec);  // stream BEGINS here — no marker
 
   while (!wantClose.load()) {
-    const double sk = seekReq.exchange(-1.0);
-    if (sk >= 0.0) {
+    if (seekCount.load() > 0) {
+      // ONE marker per received command (see CtlCtx::seekCount) — the daemon
+      // decrements its seek-pending gate per marker, and a deficit mutes the
+      // stream permanently. Markers first, even while paused: the daemon
+      // flushes its ring buffer and rebases position at the marker, so a
+      // paused seek lands instantly (and a slow av_seek_frame below doesn't
+      // keep the position cursor suppressed meanwhile).
+      const int nSeeks = seekCount.exchange(0);
+      const double sk = seekReq.load();
       dirState = dirReq.load();
+      bool markerFail = false;
+      for (int i = 0; i < nSeeks && !markerFail; ++i) markerFail = !write_chunk_header(sk, 0);
+      if (markerFail) break;
+      std::fflush(stdout);
+      seekT0 = now_ms();
+      seekTarget = sk;
       if (dirState < 0) {
         revHead = sk;
         eof = false;
       } else {
         do_seek(sk);
       }
-      // Marker first, even while paused: the daemon flushes its ring buffer
-      // and rebases position at the marker, so a paused seek lands instantly.
-      if (!write_chunk_header(sk, 0)) break;
-      std::fflush(stdout);
     }
     if (dirState < 0) {
       if (paused.load() || revHead <= 0.0005) {
