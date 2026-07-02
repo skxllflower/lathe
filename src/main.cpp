@@ -29,7 +29,7 @@ int print_help() {
     "  lathe extract-audio <input> <output>\n"
     "  lathe stream-frames <input> [--height=<px>] [--fps=<n>] [--start=<sec>]\n"
     "  lathe stream-audio <input> [--start=<sec>]\n"
-    "  lathe decode-server <input> [--height=<px>] [--start=<sec>] [--audio]\n"
+    "  lathe decode-server <input> [--height=<px>] [--start=<sec>] [--audio] [--no-hwaccel]\n"
     "  lathe audio-peaks <input> [--bins=<n>]\n"
     "  lathe bootstrap\n"
     "  lathe --version\n"
@@ -113,15 +113,17 @@ int run_cli(const std::vector<std::string>& args) {
     int height = 720;
     double start = 0.0;
     bool audio = false;
+    bool no_hwaccel = false;
     for (size_t i = 3; i < args.size(); ++i) {
       std::string v;
       if      (parse_kv(args[i], "height", &v)) { try { height = std::stoi(v); } catch (...) {} }
       else if (parse_kv(args[i], "start",  &v)) { try { start  = std::stod(v); } catch (...) {} }
       else if (args[i] == "--audio") { audio = true; }
+      else if (args[i] == "--no-hwaccel") { no_hwaccel = true; }
       else { std::fprintf(stderr, "error: unknown argument '%s'\n", args[i].c_str()); return 2; }
     }
     return audio ? lathe::decode_server_audio(args[2], start)
-                 : lathe::decode_server(args[2], height, start);
+                 : lathe::decode_server(args[2], height, start, no_hwaccel);
   }
 
   // Pre-vendor-folder bootstraps left ffmpeg.exe next to the executable;

@@ -103,6 +103,23 @@ if (Test-Path $notice) { Copy-Item -Path $notice -Destination $coredist -Force }
 $dllCount = (Get-ChildItem $coredist -Filter '*.dll' -ErrorAction SilentlyContinue).Count
 Write-Host "  staged $coreExe + $dllCount DLL(s) -> $coredist"
 
+# Guard: a configure without the LGPL ffmpeg dev package (LATHE_HAVE_LIBAV off)
+# produces a lathe.exe whose decode-server is a "libav not built in" stub and
+# stages ZERO DLLs — the installer then silently fails ALL native video. Verify
+# libav is actually linked before bundling, and hard-fail with a fix hint if not.
+$stagedExe = Join-Path $coredist $coreExe
+$libavInfo = (& $stagedExe libav-version | Out-String).Trim()
+if ($dllCount -eq 0 -or $libavInfo -match 'not built in') {
+    throw @"
+lathe.exe was built WITHOUT libav ($dllCount DLL(s) staged; libav-version: '$libavInfo').
+The decode-server would be a stub and native video would fail across the app.
+Fix: ensure the LGPL ffmpeg dev package is present at configure time — vendor it
+under third_party/ffmpeg, or configure with -DLATHE_FETCH_FFMPEG=ON — then rebuild
+(re-run WITHOUT -SkipCpp). Refusing to bundle a no-video installer.
+"@
+}
+Write-Host "  libav OK: $((($libavInfo -split "`r?`n")[0..1]) -join ' | ')"
+
 # ---- Step 3: bundle the installer ----------------------------------------
 if ($SkipBundle) {
     Write-Host "`n-SkipBundle: stopping after staging." -ForegroundColor Yellow

@@ -31,6 +31,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/display.h>
+#include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
@@ -336,7 +337,7 @@ void rotate_rgba(const uint8_t* src, int srcStride, int sw, int sh,
 
 }  // namespace
 
-int decode_server(const std::string& input, int height, double start_sec) {
+int decode_server(const std::string& input, int height, double start_sec, bool no_hwaccel) {
 #ifdef _WIN32
   _setmode(_fileno(stdout), _O_BINARY);  // raw frame bytes on stdout
 #endif
@@ -349,7 +350,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
     if (fmt) avformat_close_input(&fmt);
     return 1;
   }
-  const int vs = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  int vs = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
   if (vs < 0) { std::fprintf(stderr, "decode-server: no video stream\n"); avformat_close_input(&fmt); return 1; }
   AVStream* st = fmt->streams[vs];
   const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
@@ -367,12 +368,31 @@ int decode_server(const std::string& input, int height, double start_sec) {
     // path <video> used to provide. get_format picks D3D11 surfaces only when
     // the decoder lists them, so unsupported codecs/GPUs silently stay on the
     // (still multithreaded) software path; frames transfer to system memory
-    // per frame in render_frame.
-    if (av_hwdevice_ctx_create(&hwdev, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) >= 0) {
+    // per frame in render_frame. `no_hwaccel` (set by the frame-server on a
+    // respawn after a prior hw fault on this file) skips d3d11va outright.
+    if (!no_hwaccel &&
+        av_hwdevice_ctx_create(&hwdev, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) >= 0) {
       dec->hw_device_ctx = av_buffer_ref(hwdev);
       dec->get_format = hw_get_format;
     }
     dec_ok = avcodec_open2(dec, codec, nullptr) >= 0;
+    // Opening the codec WITH hw accel can fail on a flaky GPU/driver even when
+    // device creation succeeded — drop hw and open software rather than dying.
+    if (!dec_ok && hwdev) {
+      std::fprintf(stderr, "decode-server: hw codec open failed, retrying software\n");
+      std::fflush(stderr);
+      av_buffer_unref(&hwdev);
+      hwdev = nullptr;
+      avcodec_free_context(&dec);
+      dec = avcodec_alloc_context3(codec);
+      dec_ok = dec && avcodec_parameters_to_context(dec, st->codecpar) >= 0;
+      if (dec_ok) {
+        dec->thread_count = 0;
+        dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        dec->flags2 |= AV_CODEC_FLAG2_FAST;
+        dec_ok = avcodec_open2(dec, codec, nullptr) >= 0;
+      }
+    }
   }
   if (!dec_ok) {
     std::fprintf(stderr, "decode-server: codec open failed\n");
@@ -381,6 +401,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
     avformat_close_input(&fmt);
     return 1;
   }
+  bool hwActive = (hwdev != nullptr);  // hw device attached to `dec` right now
 
   // Output geometry is the DISPLAYED orientation: a 90/270 display-matrix
   // rotation swaps the source dims before the height cap is applied, and each
@@ -454,6 +475,10 @@ int decode_server(const std::string& input, int height, double start_sec) {
   bool wrapReq = false;     // gapless loop: jump back to the in-point next
   int dirState = 1;         // 1 = forward, -1 = reverse (backward-GOP chunks)
   double revHead = 0.0;     // reverse playback position (descending)
+  bool hwFellBack = false;  // software re-fallback already done (at most once)
+  bool hwFaultReq = false;  // a fatal hw decode error requested the fallback
+  int  hwFaultErr = 0;      // the triggering AVERROR (for the stderr log line)
+  double curPos = start_sec > 0.0 ? start_sec : 0.0;  // last emitted frame time
 
   // Scale (+ rotate, + tone-map) the decoded frame into `out` (frameBytes).
   // Downloads a GPU (d3d11va) frame to system memory first, and (re)builds the
@@ -547,6 +572,7 @@ int decode_server(const std::string& input, int height, double start_sec) {
 
   auto emit_frame = [&](double ft) -> bool {
     if (!render_frame(scratch.data())) return true;  // bad frame — skip, keep streaming
+    curPos = ft;  // resume point if a hw fault forces a software reopen
     if (loopCacheOn) {
       if (loopIn.load() != loopCacheIn || loopOut.load() != loopCacheOut) {
         loop_cache_reset();  // bounds moved mid-capture
@@ -560,9 +586,11 @@ int decode_server(const std::string& input, int height, double start_sec) {
   };
 
   // Emit everything the decoder has ready. Shared by the normal per-packet
-  // path and the EOF drain.
+  // path and the EOF drain. A fatal receive_frame error while hw is active
+  // (the catchable class of d3d11va fault) requests the software fallback.
   auto pump_decoded = [&]() {
-    while (avcodec_receive_frame(dec, frame) >= 0) {
+    int rr;
+    while ((rr = avcodec_receive_frame(dec, frame)) >= 0) {
       const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
                             ? frame->best_effort_timestamp * av_q2d(st->time_base)
                             : 0.0;
@@ -594,6 +622,9 @@ int decode_server(const std::string& input, int height, double start_sec) {
       // a frame on resume; the outer loop gates further packets instead.
       if (wantClose.load() || seekReq.load() >= 0.0) break;
     }
+    if (hwActive && !hwFellBack && rr < 0 && rr != AVERROR(EAGAIN) && rr != AVERROR_EOF) {
+      hwFaultReq = true; hwFaultErr = rr;
+    }
   };
 
   // Reverse playback: video only decodes forward, so play backward by GOP-ish
@@ -623,7 +654,8 @@ int decode_server(const std::string& input, int height, double start_sec) {
         av_packet_unref(pkt);
         continue;
       }
-      while (avcodec_receive_frame(dec, frame) >= 0) {
+      int rf;
+      while ((rf = avcodec_receive_frame(dec, frame)) >= 0) {
         const double ft = (frame->best_effort_timestamp != AV_NOPTS_VALUE)
                               ? frame->best_effort_timestamp * av_q2d(st->time_base)
                               : 0.0;
@@ -634,6 +666,10 @@ int decode_server(const std::string& input, int height, double start_sec) {
         if (kept.size() > maxKeep) kept.pop_front();
       }
       if (rr >= 0) av_packet_unref(pkt);
+      if (hwActive && !hwFellBack && rf < 0 && rf != AVERROR(EAGAIN) && rf != AVERROR_EOF) {
+        hwFaultReq = true; hwFaultErr = rf;  // main loop reopens software
+        return;
+      }
     }
     if (kept.empty()) { revHead = 0.0; return; }  // nothing earlier — at the start
     for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
@@ -641,6 +677,35 @@ int decode_server(const std::string& input, int height, double start_sec) {
       if (!write_frame(it->first, it->second.data())) { wantClose.store(true); return; }
       revHead = it->first;  // progressive: a mid-chunk preemption stays consistent
     }
+  };
+
+  // Tear down the (hardware) decoder + input and reopen the SAME file fully in
+  // software (no hw_device_ctx). Geometry constants (srcW/srcH/oW/oH/frameBytes)
+  // are unchanged — same file, same scale target — so the emitted frame shape
+  // stays identical and the consumer's protocol is uninterrupted. The lazily
+  // (re)built sws in render_frame adapts to the new (software) pixel format.
+  auto reopen_software = [&]() -> bool {
+    if (sws) { sws_freeContext(sws); sws = nullptr; }
+    swsFmt = AV_PIX_FMT_NONE;
+    avcodec_free_context(&dec);           // also drops the hw_device_ctx ref
+    if (hwdev) av_buffer_unref(&hwdev);
+    hwdev = nullptr;
+    avformat_close_input(&fmt);
+    fmt = nullptr;
+    if (avformat_open_input(&fmt, input.c_str(), nullptr, nullptr) < 0 ||
+        avformat_find_stream_info(fmt, nullptr) < 0) {
+      return false;
+    }
+    vs = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (vs < 0) return false;
+    st = fmt->streams[vs];
+    const AVCodec* c2 = avcodec_find_decoder(st->codecpar->codec_id);
+    dec = c2 ? avcodec_alloc_context3(c2) : nullptr;
+    if (!dec || avcodec_parameters_to_context(dec, st->codecpar) < 0) return false;
+    dec->thread_count = 0;
+    dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    dec->flags2 |= AV_CODEC_FLAG2_FAST;
+    return avcodec_open2(dec, c2, nullptr) >= 0;
   };
 
   if (start_sec > 0.0) {
@@ -651,6 +716,38 @@ int decode_server(const std::string& input, int height, double start_sec) {
     preview = true;
   }
   while (!wantClose.load()) {
+    // A fatal hardware-decode error surfaced (see the send/receive sites): drop
+    // to software ONCE and resume at the current position on the same stdout
+    // protocol, rather than letting the process die and blank the picture.
+    if (hwFaultReq && !hwFellBack) {
+      hwFaultReq = false;
+      char eb[128] = {0};
+      av_strerror(hwFaultErr, eb, sizeof(eb));
+      std::fprintf(stderr, "decode-server: hw decode failed (%s), retrying software\n", eb);
+      std::fflush(stderr);
+      if (reopen_software()) {
+        hwFellBack = true;
+        hwActive = false;
+        const double pos = curPos > 0.0 ? curPos : 0.0;
+        if (dirState < 0) {
+          revHead = pos;
+        } else {
+          const int64_t ts = static_cast<int64_t>(pos / av_q2d(st->time_base));
+          av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
+          avcodec_flush_buffers(dec);
+          dropUntil = pos > 0.0 ? pos : -1.0;
+          preview = true;
+        }
+        eof = false;
+        drained = false;
+        wrapReq = false;
+        loop_cache_reset();
+        continue;
+      }
+      std::fprintf(stderr, "decode-server: software reopen failed\n");
+      std::fflush(stderr);
+      break;  // both hw and software failed — exit as before
+    }
     const double sk = seekReq.exchange(-1.0);
     if (sk >= 0.0) {
       dirState = dirReq.load();
@@ -705,8 +802,13 @@ int decode_server(const std::string& input, int height, double start_sec) {
         continue;
       }
     } else {
-      if (pkt->stream_index == vs && avcodec_send_packet(dec, pkt) >= 0) {
-        pump_decoded();
+      if (pkt->stream_index == vs) {
+        const int sr = avcodec_send_packet(dec, pkt);
+        if (sr >= 0) {
+          pump_decoded();
+        } else if (hwActive && !hwFellBack && sr != AVERROR(EAGAIN) && sr != AVERROR_EOF) {
+          hwFaultReq = true; hwFaultErr = sr;  // main loop reopens software
+        }
       }
       av_packet_unref(pkt);
     }
@@ -1089,7 +1191,7 @@ int decode_probe(const std::string&, int, double, int) {
   std::fprintf(stderr, "decode-probe: libav not built in (LGPL ffmpeg dev package missing)\n");
   return 1;
 }
-int decode_server(const std::string&, int, double) {
+int decode_server(const std::string&, int, double, bool) {
   std::fprintf(stderr, "decode-server: libav not built in (LGPL ffmpeg dev package missing)\n");
   return 1;
 }

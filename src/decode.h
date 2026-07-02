@@ -20,7 +20,10 @@ int decode_probe(const std::string& input, int height, double seek_sec, int nfra
 // while paused so a paused scrub updates the picture), {"op":"pause"}/
 // {"op":"play"}, {"op":"close"}. Backpressure paces the decode. The control
 // protocol the frame-server / engine drive instead of spawning per seek.
-int decode_server(const std::string& input, int height, double start_sec);
+// `no_hwaccel` skips d3d11va entirely (pure software) — the frame-server sets
+// it on a respawn after a prior hardware-decode fault on the same file.
+int decode_server(const std::string& input, int height, double start_sec,
+                  bool no_hwaccel = false);
 
 // Audio sibling (`decode-server --audio`): same control protocol and chunk
 // framing, payload = interleaved 48 kHz stereo f32le PCM; WAVDESK_APCM on
