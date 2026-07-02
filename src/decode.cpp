@@ -194,6 +194,36 @@ uint64_t now_ms() {
 #endif
 }
 
+// avformat interrupt hook: a pending seek (or close) aborts the blocking call
+// in flight — most importantly av_seek_frame's linear cluster scan on a
+// cue-less/cue-sparse matroska, which otherwise pins the main loop for seconds
+// while newer seek commands (and their markers) queue behind it. Rapid seeks
+// then coalesce to the LATEST target at decode level: the superseded scan
+// aborts in milliseconds, the loop re-enters, emits one marker per received
+// command, and services only the newest target.
+struct InterruptCtx {
+  std::atomic<bool>* wantClose;
+  std::atomic<int>* seekCount;
+};
+
+int interrupt_cb(void* opaque) {
+  auto* c = static_cast<InterruptCtx*>(opaque);
+  return (c->wantClose->load(std::memory_order_relaxed) ||
+          c->seekCount->load(std::memory_order_relaxed) > 0)
+             ? 1
+             : 0;
+}
+
+// An interrupt-aborted read LATCHES AVERROR_EXIT into the AVIOContext — every
+// later read then fails instantly (mov never recovers; matroska mostly
+// resyncs). Clear the latch before servicing the seek that caused the abort.
+void clear_io_latch(AVFormatContext* fmt) {
+  if (fmt && fmt->pb) {
+    fmt->pb->eof_reached = 0;
+    fmt->pb->error = 0;
+  }
+}
+
 // Reads JSON-line commands on stdin and drives the atomics. Runs on its own
 // thread; blocks on stdin and exits when the stream closes.
 void ctl_loop(CtlCtx* c) {
@@ -479,6 +509,9 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
   std::atomic<double> loopOut{0.0};
   std::atomic<bool> tonemap{hdrKind != 0};  // default ON for HDR sources
   CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &seekCount, &loopIn, &loopOut, &tonemap };
+  InterruptCtx intrCtx{ &wantClose, &seekCount };
+  fmt->interrupt_callback.callback = interrupt_cb;
+  fmt->interrupt_callback.opaque = &intrCtx;
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
@@ -669,6 +702,7 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
   auto reverse_chunk = [&]() {
     const double chunkEnd = revHead;
     const double seekT = chunkEnd - 0.0005 > 0.0 ? chunkEnd - 0.0005 : 0.0;
+    clear_io_latch(fmt);
     av_seek_frame(fmt, vs, static_cast<int64_t>(seekT / av_q2d(st->time_base)),
                   AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(dec);
@@ -728,6 +762,8 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
         avformat_find_stream_info(fmt, nullptr) < 0) {
       return false;
     }
+    fmt->interrupt_callback.callback = interrupt_cb;
+    fmt->interrupt_callback.opaque = &intrCtx;
     vs = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (vs < 0) return false;
     st = fmt->streams[vs];
@@ -803,6 +839,7 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
         preview = false;
         eof = false;
       } else {
+        clear_io_latch(fmt);
         const int64_t ts = static_cast<int64_t>(sk / av_q2d(st->time_base));
         av_seek_frame(fmt, vs, ts, AVSEEK_FLAG_BACKWARD);
         avcodec_flush_buffers(dec);
@@ -826,7 +863,11 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
       sleep_ms(8);
       continue;
     }
-    if (av_read_frame(fmt, pkt) < 0) {
+    const int readRc = av_read_frame(fmt, pkt);
+    // An interrupt-aborted read (incoming seek/close preempted it) is not EOF:
+    // loop back so the seek is serviced instead of draining the decoder.
+    if (readRc < 0 && (wantClose.load() || seekCount.load() > 0)) continue;
+    if (readRc < 0) {
       // End of stream: DRAIN the decoder before idling. Frame-threaded decode
       // buffers ~thread_count frames internally — without the flush packet, a
       // video shorter than the pipeline emits NOTHING at all, and every file
@@ -895,6 +936,7 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
         loopCacheIn = lIn;
         loopCacheOut = lOut;
       }
+      clear_io_latch(fmt);
       av_seek_frame(fmt, vs, static_cast<int64_t>(lIn / av_q2d(st->time_base)),
                     AVSEEK_FLAG_BACKWARD);
       avcodec_flush_buffers(dec);
@@ -990,11 +1032,39 @@ int decode_server_audio(const std::string& input, double start_sec) {
   std::atomic<double> loopOut{0.0};
   std::atomic<bool> tonemapUnused{false};  // video-only op; absorbed here
   CtlCtx ctlCtx{ &wantClose, &paused, &seekReq, &dirReq, &seekCount, &loopIn, &loopOut, &tonemapUnused };
+  InterruptCtx intrCtx{ &wantClose, &seekCount };
+  fmt->interrupt_callback.callback = interrupt_cb;
+  fmt->interrupt_callback.opaque = &intrCtx;
 #ifdef _WIN32
   HANDLE ctlThread = CreateThread(nullptr, 0, ctl_thread_proc, &ctlCtx, 0, nullptr);
 #else
   std::thread ctlThread(ctl_loop, &ctlCtx);
 #endif
+
+  // Seek routing. Matroska cues typically index ONLY the video track: seeking
+  // on the audio stream index of such a file falls off the index and degrades
+  // to a linear cluster scan from the segment start — the measured multi-
+  // second (up to ~12s in the field) far-seek stall. Seek on the real video
+  // stream instead when one exists (attached cover art doesn't count); the
+  // demuxer repositions every stream at that cluster and dropUntil trims the
+  // keyframe-early audio. Falls back to the audio index if that seek fails.
+  int seekStream = as;
+  {
+    const int v = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (v >= 0 && !(fmt->streams[v]->disposition & AV_DISPOSITION_ATTACHED_PIC)) seekStream = v;
+  }
+  auto stream_seek = [&](double t) -> int {
+    clear_io_latch(fmt);
+    AVStream* ss = fmt->streams[seekStream];
+    int rc = av_seek_frame(fmt, seekStream,
+                           static_cast<int64_t>(t / av_q2d(ss->time_base)),
+                           AVSEEK_FLAG_BACKWARD);
+    if (rc < 0 && seekStream != as && !wantClose.load() && seekCount.load() == 0) {
+      rc = av_seek_frame(fmt, as, static_cast<int64_t>(t / av_q2d(st->time_base)),
+                         AVSEEK_FLAG_BACKWARD);
+    }
+    return rc;
+  };
 
   double dropUntil = -1.0;
   uint64_t seekT0 = 0;      // seek-servicing timer (0 = no measurement pending)
@@ -1018,8 +1088,7 @@ int decode_server_audio(const std::string& input, double start_sec) {
     }
   };
   auto do_seek = [&](double t) {
-    const int64_t ts = static_cast<int64_t>(t / av_q2d(st->time_base));
-    av_seek_frame(fmt, as, ts, AVSEEK_FLAG_BACKWARD);
+    stream_seek(t);
     avcodec_flush_buffers(dec);
     swr_make();  // drop resampler history from the old position
     dropUntil = t;
@@ -1039,8 +1108,7 @@ int decode_server_audio(const std::string& input, double start_sec) {
   auto reverse_chunk_audio = [&](std::vector<float>& acc, std::vector<float>& rev) {
     const double chunkEnd = revHead;
     const double chunkStart = chunkEnd - REV_WIN_SEC > 0.0 ? chunkEnd - REV_WIN_SEC : 0.0;
-    av_seek_frame(fmt, as, static_cast<int64_t>(chunkStart / av_q2d(st->time_base)),
-                  AVSEEK_FLAG_BACKWARD);
+    stream_seek(chunkStart);
     avcodec_flush_buffers(dec);
     swr_make();
     acc.clear();
@@ -1207,7 +1275,10 @@ int decode_server_audio(const std::string& input, double start_sec) {
       sleep_ms(8);
       continue;
     }
-    if (av_read_frame(fmt, pkt) < 0) {
+    const int readRc = av_read_frame(fmt, pkt);
+    // Interrupt-aborted read (incoming seek/close) is not EOF — service it.
+    if (readRc < 0 && (wantClose.load() || seekCount.load() > 0)) continue;
+    if (readRc < 0) {
       // Drain decoder-buffered tail samples before idling (see video twin).
       if (!drained) {
         drained = true;
