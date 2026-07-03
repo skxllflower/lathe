@@ -903,6 +903,11 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
       wrapReq = false;
       const double lIn = loopIn.load();
       const double lOut = loopOut.load();
+      // The loop can be CLEARED between the wrap request and servicing it (a
+      // live region-drag disarms mid-flight): abandon the wrap — the loads
+      // above read the cleared 0/0 and the seek below would yank the stream
+      // to the file start. An EOF-origin wrap re-derives eof next iteration.
+      if (!(lOut > lIn + 0.01)) continue;
       // A capture that survived a full cycle is complete.
       if (loopCacheOn && !loopCache.empty() && lIn == loopCacheIn && lOut == loopCacheOut) {
         loopCacheOn = false;
@@ -1304,6 +1309,11 @@ int decode_server_audio(const std::string& input, double start_sec) {
       // flush), then jump to the in-point and sample-trim onto it.
       wrapReq = false;
       const double lIn = loopIn.load();
+      // Cleared between the wrap request and servicing it (a live
+      // region-drag disarms mid-flight): abandon the wrap — a marker at the
+      // cleared 0-bounds would rebase the consumer's position to 0 and
+      // re-cue the stream to the file start. EOF re-derives next iteration.
+      if (!(loopOut.load() > lIn + 0.01)) continue;
       if (!write_chunk_header(lIn, kWrapMarkerLen)) break;
       std::fflush(stdout);
       do_seek(lIn);
