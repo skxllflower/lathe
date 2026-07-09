@@ -450,8 +450,25 @@ pub struct ToolBinaryStatus {
     pub message:  String,
 }
 
+// ASYNC + spawn_blocking: the probe stats several candidate paths (.exists()
+// on the configured path, env fallback, dev + installed locations). As a sync
+// command Tauri v2 ran those filesystem hits INLINE on the MAIN thread inside
+// WebMessageReceived, and it fires at boot via the tool-status init — a stalled
+// or network drive would starve the pump (wavdesk converted its same-named
+// command for exactly this reason). spawn_blocking keeps main flowing.
 #[tauri::command]
-pub fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
+pub async fn tool_binary_probe(name: String, configured: String) -> ToolBinaryStatus {
+    tauri::async_runtime::spawn_blocking(move || tool_binary_probe_impl(name, configured))
+        .await
+        .unwrap_or_else(|e| ToolBinaryStatus {
+            resolved: false,
+            path:     String::new(),
+            source:   "missing".into(),
+            message:  format!("probe join error: {e}"),
+        })
+}
+
+fn tool_binary_probe_impl(name: String, configured: String) -> ToolBinaryStatus {
     let trimmed = configured.trim();
     if !trimmed.is_empty() {
         let pb = PathBuf::from(trimmed);
