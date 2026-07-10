@@ -125,6 +125,41 @@ fs::path find_recursive(const fs::path& root, const std::string& filename) {
   return fs::path();
 }
 
+#if defined(__APPLE__)
+// Extract a .zip on macOS via `ditto -x -k` (ships on every macOS, unlike a
+// guaranteed `unzip`). The evermeet archive holds a single binary at the root.
+bool extract_zip_mac(const fs::path& zip, const fs::path& dest) {
+  std::error_code ec;
+  fs::create_directories(dest, ec);
+  std::vector<std::string> argv = {
+    "ditto", "-x", "-k", zip.string(), dest.string(),
+  };
+  std::string err;
+  int rc = run_subprocess(argv, [&](const std::string& line) {
+    if (!line.empty()) { if (!err.empty()) err += "\n"; err += line; }
+  });
+  if (rc != 0 && !err.empty()) emit_bootstrap("info", "ditto", 0, 0, err);
+  return rc == 0;
+}
+
+// Make a freshly downloaded binary runnable: chmod 0755 and strip the
+// com.apple.quarantine xattr so Gatekeeper doesn't block the spawned tool.
+// Both best-effort — a missing quarantine attr makes xattr exit non-zero,
+// which we ignore.
+void make_executable_mac(const fs::path& bin) {
+  std::error_code ec;
+  fs::permissions(bin,
+    fs::perms::owner_all |
+    fs::perms::group_read | fs::perms::group_exec |
+    fs::perms::others_read | fs::perms::others_exec,
+    fs::perm_options::replace, ec);
+  std::vector<std::string> argv = {
+    "xattr", "-d", "com.apple.quarantine", bin.string(),
+  };
+  run_subprocess(argv, [](const std::string&) {});
+}
+#endif
+
 }
 
 bool ffmpeg_present() {
@@ -141,6 +176,7 @@ bool ensure_ffmpeg() {
   // executable lives under Program Files. Staging lives in the same dir
   // so the final rename is same-volume (atomic).
   fs::path bin_dir   = path_from_utf8(shared_bin_dir());
+#ifdef _WIN32
   fs::path zip_path  = bin_dir / "_ffmpeg_download.zip";
   fs::path extract_d = bin_dir / "_ffmpeg_extract";
   fs::path target    = bin_dir / "ffmpeg.exe";
@@ -216,6 +252,84 @@ bool ensure_ffmpeg() {
 
   emit_bootstrap("done", "ffmpeg");
   return true;
+#elif defined(__APPLE__)
+  // evermeet.cx publishes a static, standalone macOS ffmpeg CLI build (a zip
+  // holding one binary at the root). GPL is fine: lathe spawns ffmpeg as a
+  // subprocess for the convert path, same as the Windows gpl build. (The linked
+  // decode-server uses the separately-bundled LGPL libav, not this binary.)
+  fs::path zip_path  = bin_dir / "_ffmpeg_download.zip";
+  fs::path extract_d = bin_dir / "_ffmpeg_extract";
+  fs::path target    = bin_dir / "ffmpeg";
+
+  std::error_code ec;
+  fs::remove(zip_path, ec);
+  fs::remove_all(extract_d, ec);
+
+  const std::string url = "https://evermeet.cx/ffmpeg/getrelease/zip";
+
+  bool ok = download_with_progress(url, zip_path,
+    [&](uint64_t bytes, uint64_t total) {
+      emit_bootstrap("download", "ffmpeg", bytes, total);
+    });
+
+  if (!ok) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "download failed");
+    fs::remove(zip_path, ec);
+    return false;
+  }
+
+  emit_bootstrap("extracting", "ffmpeg");
+  if (!extract_zip_mac(zip_path, extract_d)) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "archive extraction failed");
+    fs::remove(zip_path, ec);
+    fs::remove_all(extract_d, ec);
+    return false;
+  }
+
+  fs::path found = find_recursive(extract_d, "ffmpeg");
+  if (found.empty()) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0,
+                   "ffmpeg not found in extracted archive");
+    fs::remove(zip_path, ec);
+    fs::remove_all(extract_d, ec);
+    return false;
+  }
+
+  // Install via tmp + rename so a concurrent reader never sees a partial binary.
+  fs::path tmp = target;
+  tmp += ".tmp";
+  fs::copy_file(found, tmp, fs::copy_options::overwrite_existing, ec);
+  std::string install_err = ec ? ec.message() : std::string();
+  if (!ec) {
+    std::error_code rename_ec;
+    fs::rename(tmp, target, rename_ec);
+    if (rename_ec) {
+      install_err = rename_ec.message();
+      fs::remove(tmp, ec);
+    }
+  }
+  std::error_code exists_ec;
+  if (!fs::exists(target, exists_ec)) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0,
+                   "could not install ffmpeg into shared bin: " + install_err);
+    fs::remove(zip_path, ec);
+    fs::remove_all(extract_d, ec);
+    return false;
+  }
+
+  make_executable_mac(target);
+
+  fs::remove(zip_path, ec);
+  fs::remove_all(extract_d, ec);
+
+  write_binary_manifest(path_to_utf8(target), url, "-version");
+
+  emit_bootstrap("done", "ffmpeg");
+  return true;
+#else
+  emit_bootstrap("failed", "ffmpeg", 0, 0, "unsupported platform");
+  return false;
+#endif
 }
 
 bool ensure_required() {
