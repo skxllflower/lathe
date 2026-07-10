@@ -219,6 +219,31 @@ ConvertResult convert(const std::string& input,
     fs::create_directories(out_path.parent_path(), ec);
   }
 
+  // Overwrite-in-place guard (POSIX/macOS). The GUI's "overwrite originals"
+  // mode, when the chosen format equals the source format, passes output ==
+  // input. ffmpeg REFUSES to edit a file in place: it exits with
+  // AVERROR(EINVAL) (-22) — "Output <f> same as Input #0 - exiting / FFmpeg
+  // cannot edit existing files in-place / Error opening output files: Invalid
+  // argument". The failure path below would then fs::remove(out_path), i.e. the
+  // user's ONLY copy. Redirect ffmpeg to a sibling temp and atomically rename
+  // it over the original on success instead. Windows stays byte-identical (the
+  // same latent bug there needs a WAVdesk-coordinated fix; out of scope here).
+#ifndef _WIN32
+  bool in_place = false;
+  fs::path ffmpeg_out = out_path;
+  {
+    std::error_code eqec;
+    if (fs::exists(out_path, eqec) && fs::equivalent(in_path, out_path, eqec)) {
+      in_place = true;
+      const std::string tmpname = out_path.stem().string() +
+                                  ".lathe-inplace-tmp" + out_path.extension().string();
+      ffmpeg_out = out_path.has_parent_path() ? out_path.parent_path() / tmpname
+                                              : fs::path(tmpname);
+    }
+  }
+  const std::string ffmpeg_out_utf8 = path_to_utf8(ffmpeg_out);
+#endif
+
   // Camera RAW inputs demosaic through LibRaw into a 16-bit PPM first;
   // ffmpeg has no camera-RAW decoder at all. The intermediate sits next to
   // the output (same volume, already-created directory) and is removed on
@@ -304,7 +329,11 @@ ConvertResult convert(const std::string& input,
     argv.push_back("-t");
     argv.push_back(opts.duration);
   }
+#ifdef _WIN32
   argv.push_back(output);
+#else
+  argv.push_back(in_place ? ffmpeg_out_utf8 : output);
+#endif
 
   std::string last_error_line;
   double batch_time_s = -1.0;
@@ -339,7 +368,11 @@ ConvertResult convert(const std::string& input,
   cleanup_raw();
 
   if (was_cancelled()) {
+#ifdef _WIN32
     fs::remove(out_path, ec);
+#else
+    fs::remove(ffmpeg_out, ec);  // the temp on in-place; == out_path otherwise
+#endif
     progress_cancelled();
     return ConvertResult::Cancelled;
   }
@@ -352,16 +385,38 @@ ConvertResult convert(const std::string& input,
   // unsigned — so gate on the error_code, not the size comparison, or a stat
   // failure on the fresh output reads as a clean convert.
   std::error_code sz_ec;
+#ifdef _WIN32
   const std::uintmax_t out_sz = fs::file_size(out_path, sz_ec);
+#else
+  const std::uintmax_t out_sz = fs::file_size(ffmpeg_out, sz_ec);
+#endif
   const bool out_ok = !sz_ec && out_sz > 0;
   if (rc != 0 || !out_ok) {
+#ifdef _WIN32
     fs::remove(out_path, ec);
+#else
+    fs::remove(ffmpeg_out, ec);  // never the original on the in-place path
+#endif
     progress_error(!last_error_line.empty()
       ? last_error_line
       : ("ffmpeg failed (exit code " + std::to_string(rc) + ")"));
     return ConvertResult::FfmpegFailed;
   }
 
+#ifndef _WIN32
+  if (in_place) {
+    // Atomically replace the original with the freshly encoded temp. Same
+    // directory / same volume, so rename() can't fail EXDEV; POSIX rename
+    // overwrites an existing destination in one step.
+    std::error_code rnec;
+    fs::rename(ffmpeg_out, out_path, rnec);
+    if (rnec) {
+      fs::remove(ffmpeg_out, ec);
+      progress_error("overwrite-in-place: could not replace original: " + rnec.message());
+      return ConvertResult::FfmpegFailed;
+    }
+  }
+#endif
   progress_done(output);
   return ConvertResult::Ok;
 }

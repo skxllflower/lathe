@@ -79,6 +79,31 @@ if (FFMPEG_DIR AND EXISTS "${FFMPEG_DIR}/include")
             "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt"
             "$<TARGET_FILE_DIR:lathe>"
     COMMENT "lathe: copying LGPL ffmpeg DLLs + notice next to lathe.exe")
+elseif (APPLE)
+  # --- macOS: link the system/Homebrew libav via pkg-config. -----------------
+  # There is no win64 lgpl-shared dev package to unzip here; instead the port
+  # links whatever ffmpeg the developer installed (Homebrew's `ffmpeg` ships the
+  # dev headers + .pc files). This is APPLE-only and never touches the Windows
+  # path above, so the Windows build stays byte-identical. If pkg-config or the
+  # libav modules are absent we fall through to the same stub build as before
+  # (LATHE_HAVE_LIBAV undefined -> decode.cpp compiles to stubs).
+  find_package(PkgConfig QUIET)
+  if (PkgConfig_FOUND)
+    pkg_check_modules(LIBAV
+      libavformat libavcodec libavutil libswscale libswresample)
+    if (LIBAV_FOUND)
+      message(STATUS "lathe: linking libav via pkg-config (avformat ${LIBAV_libavformat_VERSION})")
+      # _LINK_LIBRARIES carries absolute library paths; _INCLUDE_DIRS the headers.
+      target_include_directories(lathe PRIVATE ${LIBAV_INCLUDE_DIRS})
+      target_link_directories(lathe PRIVATE ${LIBAV_LIBRARY_DIRS})
+      target_link_libraries(lathe PRIVATE ${LIBAV_LINK_LIBRARIES})
+      target_compile_definitions(lathe PRIVATE LATHE_HAVE_LIBAV=1)
+    else()
+      message(WARNING "lathe: libav modules not found via pkg-config — building without the linked decoder (install Homebrew ffmpeg to enable it)")
+    endif()
+  else()
+    message(WARNING "lathe: pkg-config not found — building without the linked decoder (install pkg-config + Homebrew ffmpeg to enable it)")
+  endif()
 else()
   message(STATUS "lathe: LGPL libav dev package not found under third_party/ — building without the linked decoder (configure with -DLATHE_FETCH_FFMPEG=ON to fetch it)")
 endif()
