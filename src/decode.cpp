@@ -276,6 +276,12 @@ bool write_chunk_header(double pts_sec, uint32_t payload_bytes) {
 enum AVPixelFormat hw_get_format(AVCodecContext*, const enum AVPixelFormat* fmts) {
   for (const enum AVPixelFormat* p = fmts; *p != AV_PIX_FMT_NONE; ++p) {
     if (*p == AV_PIX_FMT_D3D11) return *p;
+#ifdef __APPLE__
+    // macOS VideoToolbox surface — mirrors the D3D11 pick above. Anything the
+    // decoder doesn't offer as VT falls through to fmts[0] (software), so a
+    // codec VideoToolbox can't hw-decode stays on the CPU path.
+    if (*p == AV_PIX_FMT_VIDEOTOOLBOX) return *p;
+#endif
   }
   return fmts[0];
 }
@@ -412,6 +418,22 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
     dec->thread_count = 0;  // auto (core count)
     dec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     dec->flags2 |= AV_CODEC_FLAG2_FAST;
+#if defined(__APPLE__)
+    // macOS VideoToolbox hardware decode — mirrors the Windows d3d11va path
+    // below (av_hwdevice_ctx_create + get_format + per-frame transfer in
+    // render_frame). Intel UHD 630 hw-decodes H.264/HEVC fine; codecs it can't
+    // (AV1, VP9) are NOT attached here so avcodec_open2 opens the software
+    // (dav1d) decoder instead — a prior VT-on-AV1 attempt logged 148 hw errors
+    // and 0 frames, so gate the device by codec rather than let it attach and
+    // starve. Any per-frame hw fault still drops to software via reopen_software.
+    const bool hw_ok_codec = (codec->id == AV_CODEC_ID_H264 ||
+                              codec->id == AV_CODEC_ID_HEVC);
+    if (!no_hwaccel && hw_ok_codec &&
+        av_hwdevice_ctx_create(&hwdev, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, nullptr, nullptr, 0) >= 0) {
+      dec->hw_device_ctx = av_buffer_ref(hwdev);
+      dec->get_format = hw_get_format;
+    }
+#else
     // Hardware decode (d3d11va) when the GPU offers it — the laptop-battery
     // path <video> used to provide. get_format picks D3D11 surfaces only when
     // the decoder lists them, so unsupported codecs/GPUs silently stay on the
@@ -423,6 +445,7 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
       dec->hw_device_ctx = av_buffer_ref(hwdev);
       dec->get_format = hw_get_format;
     }
+#endif
     dec_ok = avcodec_open2(dec, codec, nullptr) >= 0;
     // Opening the codec WITH hw accel can fail on a flaky GPU/driver even when
     // device creation succeeded — drop hw and open software rather than dying.
@@ -552,6 +575,30 @@ int decode_server(const std::string& input, int height, double start_sec, bool n
       if (av_hwframe_transfer_data(hwsw, frame, 0) < 0) return false;
       src = hwsw;
     }
+#ifdef __APPLE__
+    else if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+      if (!hwAnnounced) {
+        hwAnnounced = true;
+        std::fprintf(stderr, "decode: %s via videotoolbox\n", avcodec_get_name(dec->codec_id));
+        std::fflush(stderr);
+      }
+      av_frame_unref(hwsw);
+      // A VideoToolbox GPU->CPU transfer failure is per-frame, not fatal: ask the
+      // main loop to reopen this file in software (reopen_software) and resume,
+      // rather than dropping the picture. Mirrors the receive_frame hw-fault path.
+      if (av_hwframe_transfer_data(hwsw, frame, 0) < 0) {
+        if (hwActive && !hwFellBack) { hwFaultReq = true; hwFaultErr = AVERROR(EIO); }
+        return false;
+      }
+      src = hwsw;
+    } else if (!hwAnnounced) {
+      // Software decode path (hw never attached, e.g. AV1 via dav1d, or after a
+      // fallback): announce once so the frame-server / owner sees which path ran.
+      hwAnnounced = true;
+      std::fprintf(stderr, "decode: %s via software\n", avcodec_get_name(dec->codec_id));
+      std::fflush(stderr);
+    }
+#endif
     const bool tm = hdrKind != 0 && tonemap.load();
     if (!sws || swsFmt != src->format || swsTm != tm) {
       if (sws) sws_freeContext(sws);
