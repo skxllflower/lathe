@@ -29,7 +29,7 @@ fn lathe_jobs() -> &'static JobMap {
 
 // Resolution order:
 //   1) {NAME}_EXE env override (shell-launched testing)
-//   2) sibling dev checkout at %USERPROFILE%\Dev\{name}\build\Debug
+//   2) sibling dev checkout under <home>/Dev/{name}/build
 //   3) installed locations (exe-relative siblings, then the default
 //      vendor spaces — Program Files\Vacant Systems on Windows)
 // The standalone app has no Settings field yet, so `configured` is
@@ -37,14 +37,20 @@ fn lathe_jobs() -> &'static JobMap {
 // Release first: a Debug-built lathe converts/decodes far below
 // realtime — when both configurations exist the Release build wins.
 fn dev_tool_fallbacks(name: &str) -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("USERPROFILE") else {
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    let Some(home) = home else {
         return Vec::new();
     };
     let base = PathBuf::from(home).join("Dev").join(name).join("build");
-    vec![
-        base.join("Release").join(format!("{}.exe", name)),
-        base.join("Debug").join(format!("{}.exe", name)),
-    ]
+    let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+    let mut out = vec![base.join("Release").join(&exe_name)];
+    #[cfg(not(windows))]
+    out.push(base.join(&exe_name));
+    out.push(base.join("Debug").join(&exe_name));
+    out
 }
 
 fn tool_dir_name(name: &str) -> String {
@@ -70,6 +76,10 @@ fn installed_tool_fallbacks(name: &str) -> Vec<PathBuf> {
             out.push(dir.join("coredist").join(&exe_name));
             // Installed layout: the CLI ships right next to this GUI exe.
             out.push(dir.join(&exe_name));
+            #[cfg(target_os = "macos")]
+            if let Some(contents) = dir.parent() {
+                out.push(contents.join("Resources").join("coredist").join(&exe_name));
+            }
             if let Some(vendor) = dir.parent() {
                 out.push(vendor.join(&app_dir).join(&exe_name));
             }
@@ -140,7 +150,7 @@ fn find_tool_binary(name: &str, configured: &str) -> Result<PathBuf, String> {
         name,
         env_var,
         tool_dir_name(name),
-        format!(r"%USERPROFILE%\Dev\{}\build", name),
+        format!("<home>/Dev/{}/build", name),
     ))
 }
 
@@ -499,14 +509,16 @@ fn tool_binary_probe_impl(name: String, configured: String) -> ToolBinaryStatus 
             };
         }
     }
-    for cand in dev_tool_fallbacks(&name) {
-        if cand.exists() {
-            return ToolBinaryStatus {
-                resolved: true,
-                path:     cand.display().to_string(),
-                source:   "dev".into(),
-                message:  "dev fallback".into(),
-            };
+    if cfg!(debug_assertions) {
+        for cand in dev_tool_fallbacks(&name) {
+            if cand.exists() {
+                return ToolBinaryStatus {
+                    resolved: true,
+                    path:     cand.display().to_string(),
+                    source:   "dev".into(),
+                    message:  "dev fallback".into(),
+                };
+            }
         }
     }
     for cand in installed_tool_fallbacks(&name) {
@@ -527,7 +539,7 @@ fn tool_binary_probe_impl(name: String, configured: String) -> ToolBinaryStatus 
             "{}.exe not found. Set {} env, reinstall, or build at {}.",
             name,
             env_var,
-            format!(r"%USERPROFILE%\Dev\{}\build", name),
+            format!("<home>/Dev/{}/build", name),
         ),
     }
 }

@@ -9,6 +9,7 @@ import { getCurrentWindow, currentMonitor, PhysicalPosition } from '@tauri-apps/
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 
 const THEME_BG = '#09090b';
+const isMac = navigator.platform.startsWith('Mac');
 const W = 420;
 const H = 500;
 const LABEL = 'about';
@@ -50,7 +51,7 @@ export async function openAboutWindow(): Promise<void> {
     maxWidth: W,
     minHeight: H,
     maxHeight: H,
-    backgroundColor: THEME_BG,
+    ...(isMac ? { transparent: true, backgroundColor: '#00000000' } : { backgroundColor: THEME_BG }),
     resizable: false,
     decorations: false,
     alwaysOnTop: true,

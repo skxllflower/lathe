@@ -3,9 +3,8 @@ THIRD-PARTY NOTICES for lathe
 
 FFmpeg (shared libraries: avformat, avcodec, avutil, swscale, swresample)
 -------------------------------------------------------------------------
-The DLLs distributed alongside lathe.exe (avformat-*.dll, avcodec-*.dll,
-avutil-*.dll, swscale-*.dll, swresample-*.dll) are an unmodified LGPL build
-of FFmpeg, dynamically linked by lathe.
+The shared libraries distributed alongside Lathe are an unmodified LGPL build
+of FFmpeg, dynamically linked by Lathe.
 
   License:  GNU Lesser General Public License, version 2.1 or later
             https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
@@ -19,9 +18,14 @@ source snapshot and build scripts with every release:
   https://github.com/BtbN/FFmpeg-Builds/releases
   https://github.com/BtbN/FFmpeg-Builds
 
+The macOS build uses the official FFmpeg 8.1.2 source archive and is configured
+without GPL or nonfree components. The exact source archive, LGPL license, and
+configure arguments are distributed beside the shared libraries inside the
+application bundle.
+
 In accordance with the LGPL, the FFmpeg libraries are dynamically linked
-and user-replaceable: you may substitute your own compatible builds of
-these DLLs next to lathe.exe.
+and user-replaceable: you may substitute your own compatible builds beside the
+Lathe core executable.
 
 FFmpeg command-line executable (ffmpeg.exe)
 -------------------------------------------
