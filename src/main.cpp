@@ -21,7 +21,7 @@ namespace {
 
 int print_help() {
   std::puts(
-    "lathe " "0.2.0" " - any-to-any media converter (ffmpeg wrapper)\n"
+    "lathe " LATHE_VERSION " - any-to-any media converter (ffmpeg wrapper)\n"
     "\n"
     "Usage:\n"
     "  lathe convert <input> <output> [options]\n"
@@ -82,7 +82,7 @@ int run_cli(const std::vector<std::string>& args) {
 
   if (cmd == "--help" || cmd == "-h") return print_help();
   if (cmd == "--version" || cmd == "-v") {
-    std::puts("lathe 0.2.0");
+    std::puts("lathe " LATHE_VERSION);
     return 0;
   }
   if (cmd == "libav-version") {

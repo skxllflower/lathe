@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(lathe LANGUAGES CXX VERSION 0.1.0)
+project(lathe LANGUAGES CXX VERSION 0.1.6)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -145,3 +145,7 @@ endif()
 # ffmpeg.exe is no longer copied next to the build output — it lives in
 # the Vacant Systems shared bin (see src/paths.cpp) and a next-to-exe copy
 # would permanently win the portable-override tier of the resolution order.
+
+# Single version source of truth: the CLI help/--version banners print
+# LATHE_VERSION, so bumping project(VERSION) is the whole C++ bump.
+target_compile_definitions(lathe PRIVATE LATHE_VERSION="${PROJECT_VERSION}")

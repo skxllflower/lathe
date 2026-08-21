@@ -26,3 +26,6 @@ gui/src-tauri/gen/
 # .gitkeep keeps the dir so the tauri resources glob still validates).
 gui/src-tauri/coredist/*
 !gui/src-tauri/coredist/.gitkeep
+
+# build logs never belong in history
+*.log
