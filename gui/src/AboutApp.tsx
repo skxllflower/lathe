@@ -82,13 +82,35 @@ export default function AboutApp() {
           software, used and distributed under the terms below.
         </p>
 
-        <Notice title="FFmpeg">
-          Lathe uses FFmpeg, which it downloads from the project's official
-          builds on first run and invokes as a separate program. FFmpeg is
-          free software licensed under the GNU General Public License (GPL)
-          v3 and the GNU Lesser General Public License (LGPL); the bundled
-          build is the GPL build. FFmpeg is a trademark of Fabrice Bellard.
-          Source and full license text: <Url href="https://ffmpeg.org" />
+        {/* Two DIFFERENT FFmpegs, and only the first carries a source
+            obligation on us: the libav shared libraries are LINKED into the
+            core and ship inside the app, while the converter program is
+            downloaded at runtime and merely invoked (aggregation). The single
+            notice this replaced described only the second, so the component
+            that actually needs its source offered was the one going
+            unmentioned. Version + archive URL are in lockstep with
+            tools/build-ffmpeg-lgpl-mac.sh (FFMPEG_VERSION) and
+            THIRD_PARTY_NOTICES.txt: bump all three together. */}
+        <Notice title="FFmpeg (bundled libraries)">
+          Lathe links the FFmpeg libraries avformat, avcodec, avutil, swscale
+          and swresample, which ship as shared libraries beside the Lathe core.
+          They are an unmodified LGPL v2.1 build of FFmpeg 8.1.2, configured
+          without GPL or nonfree components. The corresponding source is the
+          official release archive:{' '}
+          <Url href="https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz" />
+          {' '}The LGPL text and the exact configure arguments used ship with
+          the app, in its licenses folder; applying those arguments to that
+          archive reproduces the libraries as shipped. Being dynamically
+          linked, they are user-replaceable: you may substitute your own
+          compatible builds beside the Lathe core executable.
+        </Notice>
+
+        <Notice title="FFmpeg (converter program)">
+          Separately, Lathe downloads the stand-alone FFmpeg program from the
+          project's official builds on first run and invokes it as a separate
+          program. That build is licensed under the GPL and is not linked into
+          Lathe. FFmpeg is a trademark of Fabrice Bellard. Project and full
+          license texts: <Url href="https://ffmpeg.org" />
         </Notice>
 
         <Notice title="LibRaw">

@@ -20,10 +20,19 @@ Short hashes are optional and get backfilled; never block a commit on one.
   directory, so strict signature verification refused the whole bundle: "code object is not signed
   at all". They live in `Contents/Resources/licenses` now. Latent since the mac pipeline was written
   and invisible until Developer ID signing made the script verify what it produced.
-- **The build no longer claims LGPL source compliance it does not have**: the corresponding-source
-  tarball is staged for the Windows pipeline and then pruned from the mac bundle for size, so it
-  reaches neither the app nor the DMG. The summary said "corresponding source (shippable)" anyway.
-  It now says what actually shipped and flags that source delivery is unsettled. OPEN ITEM: shipping
-  the LGPL dylibs needs the source to accompany them or a written offer.
+- **The FFmpeg notices describe the right FFmpeg**: the About window's only FFmpeg notice covered
+  the converter program Lathe downloads and invokes, which is mere aggregation and carries no source
+  obligation, while saying nothing about the libav shared libraries actually linked into the core.
+  Those now get their own notice naming the libraries, the pinned upstream source archive, and the
+  fact that the configure arguments shipping in the app reproduce them. The old notice stays,
+  correctly scoped to the downloaded GPL build.
+- **The notices no longer point at a file that is not there**: `THIRD_PARTY_NOTICES.txt` said the
+  source archive was "distributed beside the shared libraries inside the application bundle". True
+  on Windows, false on mac since the archive is pruned for size, so it sent people looking inside the
+  app for something absent. It now gives the pinned URL, the real location of the LGPL text and
+  configure record (`Contents/Resources/licenses`), and says plainly that the archive is not bundled.
+  Source delivery for the LGPL dylibs is the URL plus the configure record: applying those arguments
+  to that archive reproduces the shipped libraries. Version and URL are in lockstep across
+  `tools/build-ffmpeg-lgpl-mac.sh`, the notices, and `AboutApp.tsx`: bump all three together.
 
 <!-- Started 2026-08-30 alongside WAVdesk's, for the cross-repo rounds the three share. -->

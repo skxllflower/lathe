@@ -271,13 +271,13 @@ fi
 printf '\n\033[32mArtifacts:\033[0m\n'
 printf '  app: %s  (%s)\n' "$APP" "$(du -sh "$APP" | cut -f1)"
 printf '  dmg: %s  (%s)\n' "$DMG" "$(du -sh "$DMG" | cut -f1)"
-# The corresponding source is NOT in the .app or the dmg: it is staged into
-# coredist for the Windows pipeline, then pruned here (size). Distributing the
-# LGPL dylibs still needs the source to accompany them or a written offer, so
-# say what actually shipped rather than claiming compliance.
+# The source ARCHIVE is not in the .app or the dmg (staged into coredist for
+# the Windows pipeline, pruned here for size). Source delivery is instead the
+# pinned upstream URL, carried in THIRD_PARTY_NOTICES.txt and the About window,
+# alongside the configure record that reproduces the shipped dylibs. Keep those
+# two in lockstep with FFMPEG_VERSION if the pin ever moves.
 echo "  libav: LGPL shared libraries + notices (Resources/licenses)"
-echo "  NOTE: corresponding source is NOT bundled. Settle source delivery"
-echo "        before handing this dmg to anyone."
+echo "  source: pinned upstream archive, referenced from the notices + About"
 if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
 cat <<EOF
 
