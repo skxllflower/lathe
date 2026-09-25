@@ -8,12 +8,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <regex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -21,6 +23,8 @@
   #include <windows.h>
   #include <fcntl.h>
   #include <io.h>
+#else
+  #include <unistd.h>
 #endif
 
 namespace lathe {
@@ -41,6 +45,50 @@ static std::string path_to_utf8(const fs::path& p) { return p.string(); }
 
 static std::string ffmpeg_path() {
   return resolved_ffmpeg();
+}
+
+// Where ffmpeg writes. A target that already exists (overwrite-originals with
+// output == input, or any replace of an existing file) is never handed to
+// ffmpeg: ffmpeg refuses output == input with EINVAL, and the failure paths
+// remove what ffmpeg wrote, which would then be the user's only copy. It
+// encodes to a sibling temp instead and publish_staged() swaps it in on
+// success, so a failed or cancelled run only ever removes a file this run
+// created. The ".wdtmp<pid>" marker is WAVdesk's staging-temp family: its
+// watcher never indexes one and its stale-temp sweep reaps a crash leftover.
+// The format extension stays last because ffmpeg picks the muxer from it.
+static fs::path staging_path_for(const fs::path& out_path) {
+  std::error_code ec;
+  if (!fs::exists(out_path, ec) && !ec) return out_path;
+#ifdef _WIN32
+  const unsigned long pid = GetCurrentProcessId();
+#else
+  const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
+  const std::string name = path_to_utf8(out_path.stem()) + ".wdtmp" +
+                           std::to_string(pid) + path_to_utf8(out_path.extension());
+  return out_path.has_parent_path() ? out_path.parent_path() / path_from_utf8(name)
+                                    : path_from_utf8(name);
+}
+
+// Replace `target` with the finished `staged` file. fs::rename is POSIX
+// rename() on mac and MoveFileExW(MOVEFILE_REPLACE_EXISTING) under MSVC's STL;
+// same directory, so it never degrades to a copy. On Windows it fails while
+// anything holds `target` open without FILE_SHARE_DELETE (WAVdesk's analyzer
+// or audio daemon via CRT fopen), often only for a moment, hence the retries.
+// A failed rename leaves `target` untouched: only the temp is removed.
+static bool publish_staged(const fs::path& staged, const fs::path& target,
+                           std::string* err) {
+  std::error_code ec;
+  for (int attempt = 0; attempt < 6; ++attempt) {
+    if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    ec.clear();
+    fs::rename(staged, target, ec);
+    if (!ec) return true;
+  }
+  std::error_code rmec;
+  fs::remove(staged, rmec);
+  *err = ec.message();
+  return false;
 }
 
 static std::string lower(std::string s) {
@@ -219,30 +267,11 @@ ConvertResult convert(const std::string& input,
     fs::create_directories(out_path.parent_path(), ec);
   }
 
-  // Overwrite-in-place guard (POSIX/macOS). The GUI's "overwrite originals"
-  // mode, when the chosen format equals the source format, passes output ==
-  // input. ffmpeg REFUSES to edit a file in place: it exits with
-  // AVERROR(EINVAL) (-22) — "Output <f> same as Input #0 - exiting / FFmpeg
-  // cannot edit existing files in-place / Error opening output files: Invalid
-  // argument". The failure path below would then fs::remove(out_path), i.e. the
-  // user's ONLY copy. Redirect ffmpeg to a sibling temp and atomically rename
-  // it over the original on success instead. Windows stays byte-identical (the
-  // same latent bug there needs a WAVdesk-coordinated fix; out of scope here).
-#ifndef _WIN32
-  bool in_place = false;
-  fs::path ffmpeg_out = out_path;
-  {
-    std::error_code eqec;
-    if (fs::exists(out_path, eqec) && fs::equivalent(in_path, out_path, eqec)) {
-      in_place = true;
-      const std::string tmpname = out_path.stem().string() +
-                                  ".lathe-inplace-tmp" + out_path.extension().string();
-      ffmpeg_out = out_path.has_parent_path() ? out_path.parent_path() / tmpname
-                                              : fs::path(tmpname);
-    }
-  }
-  const std::string ffmpeg_out_utf8 = path_to_utf8(ffmpeg_out);
-#endif
+  // "Overwrite originals" with an unchanged format passes output == input
+  // (ffmpeg: "cannot edit existing files in-place", exit -22). Every platform
+  // stages; see staging_path_for.
+  const fs::path ffmpeg_out = staging_path_for(out_path);
+  const bool staged = ffmpeg_out != out_path;
 
   // Camera RAW inputs demosaic through LibRaw into a 16-bit PPM first;
   // ffmpeg has no camera-RAW decoder at all. The intermediate sits next to
@@ -329,11 +358,7 @@ ConvertResult convert(const std::string& input,
     argv.push_back("-t");
     argv.push_back(opts.duration);
   }
-#ifdef _WIN32
-  argv.push_back(output);
-#else
-  argv.push_back(in_place ? ffmpeg_out_utf8 : output);
-#endif
+  argv.push_back(staged ? path_to_utf8(ffmpeg_out) : output);
 
   std::string last_error_line;
   double batch_time_s = -1.0;
@@ -368,11 +393,7 @@ ConvertResult convert(const std::string& input,
   cleanup_raw();
 
   if (was_cancelled()) {
-#ifdef _WIN32
-    fs::remove(out_path, ec);
-#else
-    fs::remove(ffmpeg_out, ec);  // the temp on in-place; == out_path otherwise
-#endif
+    fs::remove(ffmpeg_out, ec);
     progress_cancelled();
     return ConvertResult::Cancelled;
   }
@@ -385,38 +406,23 @@ ConvertResult convert(const std::string& input,
   // unsigned — so gate on the error_code, not the size comparison, or a stat
   // failure on the fresh output reads as a clean convert.
   std::error_code sz_ec;
-#ifdef _WIN32
-  const std::uintmax_t out_sz = fs::file_size(out_path, sz_ec);
-#else
   const std::uintmax_t out_sz = fs::file_size(ffmpeg_out, sz_ec);
-#endif
   const bool out_ok = !sz_ec && out_sz > 0;
   if (rc != 0 || !out_ok) {
-#ifdef _WIN32
-    fs::remove(out_path, ec);
-#else
-    fs::remove(ffmpeg_out, ec);  // never the original on the in-place path
-#endif
+    fs::remove(ffmpeg_out, ec);
     progress_error(!last_error_line.empty()
       ? last_error_line
       : ("ffmpeg failed (exit code " + std::to_string(rc) + ")"));
     return ConvertResult::FfmpegFailed;
   }
 
-#ifndef _WIN32
-  if (in_place) {
-    // Atomically replace the original with the freshly encoded temp. Same
-    // directory / same volume, so rename() can't fail EXDEV; POSIX rename
-    // overwrites an existing destination in one step.
-    std::error_code rnec;
-    fs::rename(ffmpeg_out, out_path, rnec);
-    if (rnec) {
-      fs::remove(ffmpeg_out, ec);
-      progress_error("overwrite-in-place: could not replace original: " + rnec.message());
+  if (staged) {
+    std::string rn_err;
+    if (!publish_staged(ffmpeg_out, out_path, &rn_err)) {
+      progress_error("could not replace " + output + ", the existing file is unchanged: " + rn_err);
       return ConvertResult::FfmpegFailed;
     }
   }
-#endif
   progress_done(output);
   return ConvertResult::Ok;
 }
@@ -440,6 +446,8 @@ ConvertResult extract(const std::string& input,
   if (out_path.has_parent_path()) {
     fs::create_directories(out_path.parent_path(), ec);
   }
+  const fs::path ffmpeg_out = staging_path_for(out_path);
+  const bool staged = ffmpeg_out != out_path;
 
   double total_duration = probe_duration_seconds(input);
   progress_start(input, output, total_duration);
@@ -461,7 +469,7 @@ ConvertResult extract(const std::string& input,
     // Drop the video stream; the audio track lands in the chosen container.
     argv.push_back("-vn");
   }
-  argv.push_back(output);
+  argv.push_back(staged ? path_to_utf8(ffmpeg_out) : output);
 
   std::string last_error_line;
   double batch_time_s = -1.0;
@@ -494,7 +502,7 @@ ConvertResult extract(const std::string& input,
   });
 
   if (was_cancelled()) {
-    fs::remove(out_path, ec);
+    fs::remove(ffmpeg_out, ec);
     progress_cancelled();
     return ConvertResult::Cancelled;
   }
@@ -507,16 +515,23 @@ ConvertResult extract(const std::string& input,
   // unsigned — so gate on the error_code, not the size comparison, or a stat
   // failure on the fresh output reads as a clean convert.
   std::error_code sz_ec;
-  const std::uintmax_t out_sz = fs::file_size(out_path, sz_ec);
+  const std::uintmax_t out_sz = fs::file_size(ffmpeg_out, sz_ec);
   const bool out_ok = !sz_ec && out_sz > 0;
   if (rc != 0 || !out_ok) {
-    fs::remove(out_path, ec);
+    fs::remove(ffmpeg_out, ec);
     progress_error(!last_error_line.empty()
       ? last_error_line
       : ("ffmpeg failed (exit code " + std::to_string(rc) + ")"));
     return ConvertResult::FfmpegFailed;
   }
 
+  if (staged) {
+    std::string rn_err;
+    if (!publish_staged(ffmpeg_out, out_path, &rn_err)) {
+      progress_error("could not replace " + output + ", the existing file is unchanged: " + rn_err);
+      return ConvertResult::FfmpegFailed;
+    }
+  }
   progress_done(output);
   return ConvertResult::Ok;
 }

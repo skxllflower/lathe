@@ -7,6 +7,16 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-09-25
+
+- **A failed convert never deletes a file that was already there**: "Overwrite originals" with an
+  unchanged format makes ffmpeg refuse (output == input), and the failure path then removed the
+  output path, which was the user's only copy. Mac had a guard; Windows did not, and on every
+  platform a failed convert or extract onto any existing file (an in-place extract, or a
+  cross-format overwrite onto a same-named sibling) still removed it. Any existing target is now
+  encoded to a `<stem>.wdtmp<pid>.<ext>` sibling and renamed over it only on success; a rename
+  that fails (Windows: the file is open elsewhere) keeps the original and reports why.
+
 ## 2026-08-30
 
 - **Mac builds are Developer ID signed and notarized**: the mac release script only ad-hoc signed

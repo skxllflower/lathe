@@ -345,8 +345,8 @@ pub async fn lathe_convert(
 
     // Overwrite-in-place across a format change leaves the differently-named
     // original beside the new file — record it so run_reader removes it on a
-    // clean exit (same-path same-format already clobbered via ffmpeg -y, so the
-    // path compare keeps us from deleting the file we just wrote).
+    // clean exit (same-path same-format is replaced in place by lathe itself, so
+    // the path compare keeps us from deleting the file we just wrote).
     if is_overwrite && !input.eq_ignore_ascii_case(output.as_str()) {
         if let Ok(mut m) = lathe_overwrite_originals().lock() {
             m.insert(job_id.clone(), input.clone());
