@@ -3,7 +3,7 @@
 Standalone media converter: ffmpeg/libav wrapper (the `lathe` CLI, `src/`) + Tauri v2 GUI
 (React/Vite `gui/src`, Rust host `gui/src-tauri`). Fork-and-owned from WAVdesk scaffolding; WAVdesk
 also drives the lathe CLI directly (Convert flow, lossy round-trips, video decode-server).
-Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.6. Ships on Windows (NSIS) and
+Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.7. Ships on Windows (NSIS) and
 macOS (Developer ID signed + notarized DMG). Day-to-day development happens on the Mac.
 
 ## Build / run
