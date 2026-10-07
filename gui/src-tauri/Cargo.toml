@@ -1,6 +1,6 @@
 [package]
 name = "lathe-gui"
-version = "0.1.7"
+version = "0.1.8"
 description = "Lathe — any-to-any media converter"
 authors = ["skxllflower"]
 edition = "2021"
