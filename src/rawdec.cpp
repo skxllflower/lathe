@@ -54,6 +54,7 @@ bool raw_decoder_available() {
 
 bool raw_decode_to_ppm(const std::string& input,
                        const fs::path& ppm_out,
+                       bool half_size,
                        std::string* error) {
   // Read the file ourselves (wide-path safe) and decode from memory —
   // LibRaw's open_file goes through fopen, which mangles non-ANSI paths
@@ -80,6 +81,9 @@ bool raw_decode_to_ppm(const std::string& input,
   LibRaw lr;
   lr.imgdata.params.use_camera_wb = 1;   // shot-time white balance
   lr.imgdata.params.output_bps   = 16;   // full depth into the encoder
+  // half_size skips the demosaic (the bulk of the decode) by reading each
+  // 2x2 Bayer quad as one pixel; colour processing is otherwise identical.
+  if (half_size) lr.imgdata.params.half_size = 1;
   // Defaults beyond that: sRGB output space + gamma, AHD-family demosaic,
   // auto-brighten — dcraw-compatible, what users expect from "open a RAW".
 
@@ -133,6 +137,7 @@ bool raw_decode_to_ppm(const std::string& input,
 
 bool raw_decode_to_ppm(const std::string&,
                        const fs::path&,
+                       bool,
                        std::string* error) {
   *error = "this lathe build has no LibRaw decoder";
   return false;

@@ -283,7 +283,7 @@ ConvertResult convert(const std::string& input,
     std::string raw_err;
     raw_tmp  = out_path;
     raw_tmp += ".rawdec.ppm";
-    if (!raw_decode_to_ppm(input, raw_tmp, &raw_err)) {
+    if (!raw_decode_to_ppm(input, raw_tmp, opts.raw_half_size, &raw_err)) {
       progress_error("RAW decode failed: " + raw_err);
       return ConvertResult::FfmpegFailed;
     }

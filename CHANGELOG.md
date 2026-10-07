@@ -7,6 +7,14 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
 Short hashes are optional and get backfilled; never block a commit on one.
 
+## 2026-10-07
+
+- **`convert --raw-half-size` for camera RAW previews**: LibRaw's half-size mode reads each 2x2 Bayer
+  quad as one pixel and skips the demosaic, so a 24 MP RAW converts in 0.25 s instead of 0.95 s (12 MP:
+  0.15 s instead of 0.5 s). WAVdesk's icon thumbnails use it; a 512 px thumb from it is ~50 dB from the
+  full decode. Every other convert keeps the full-resolution decode. WAVdesk detects the flag in
+  `lathe --help`, so an older lathe keeps working.
+
 ## 2026-09-26
 
 - **Version 0.1.7.** Ships this repo's fixes from the WAVdesk 0.1.8 stabilization round (see the 2026-09-25 entries below).

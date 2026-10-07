@@ -48,6 +48,8 @@ int print_help() {
     "  --fps=<n>                   GIF target: frame rate (default 15)\n"
     "  --colors=<n>                GIF target: palette size 2..256 (default 256)\n"
     "  --copy                      remux only: copy streams, no re-encode\n"
+    "  --raw-half-size             camera RAW input: half-size decode, no\n"
+    "                              demosaic (fast previews/thumbnails)\n"
     "\n"
     "Camera RAW inputs (ARW/CR2/CR3/NEF/DNG/RAF/ORF/RW2/...) demosaic via\n"
     "LibRaw (camera white balance, sRGB, 16-bit) before encoding.\n"
@@ -155,6 +157,7 @@ int run_cli(const std::vector<std::string>& args) {
       else if (parse_kv(a, "fps",               &opts.fps))               continue;
       else if (parse_kv(a, "colors",            &opts.colors))            continue;
       else if (a == "--copy") { opts.copy_streams = true; continue; }
+      else if (a == "--raw-half-size") { opts.raw_half_size = true; continue; }
       std::fprintf(stderr, "error: unknown argument '%s'\n", a.c_str());
       return 2;
     }

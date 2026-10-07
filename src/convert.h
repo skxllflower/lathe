@@ -46,6 +46,11 @@ struct ConvertOptions {
                                  // / 0 = from the beginning.
   std::string colors;            // GIF: palette size 2..256 (palettegen
                                  // max_colors). Empty = 256.
+  bool raw_half_size = false;    // camera RAW input: LibRaw half_size, one
+                                 // output pixel per 2x2 Bayer quad (half
+                                 // width and height) with no demosaic. For
+                                 // previews/thumbnails only; a real convert
+                                 // keeps the full-resolution decode.
   bool copy_streams = false;     // remux only: -c copy, no re-encode. Every
                                  // quality/filter knob is skipped; fails
                                  // naturally when the target container can't
