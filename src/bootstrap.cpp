@@ -158,6 +158,16 @@ void make_executable_mac(const fs::path& bin) {
   };
   run_subprocess(argv, [](const std::string&) {});
 }
+
+// SHA-256 of a file via /usr/bin/shasum (ships with every macOS); empty on failure.
+std::string sha256_mac(const fs::path& file) {
+  std::string out;
+  std::vector<std::string> argv = {"shasum", "-a", "256", file.string()};
+  int rc = run_subprocess(argv, [&](const std::string& line) {
+    if (out.empty()) out = line.substr(0, line.find(' '));
+  });
+  return rc == 0 ? out : std::string();
+}
 #endif
 
 }
@@ -253,10 +263,15 @@ bool ensure_ffmpeg() {
   emit_bootstrap("done", "ffmpeg");
   return true;
 #elif defined(__APPLE__)
-  // evermeet.cx publishes a static, standalone macOS ffmpeg CLI build (a zip
+  // Only runs when the Vacant Systems shared bin has no ffmpeg (WAVdesk provisions
+  // its arm64 build there). A static, standalone macOS ffmpeg CLI build (a zip
   // holding one binary at the root). GPL is fine: lathe spawns ffmpeg as a
   // subprocess for the convert path, same as the Windows gpl build. (The linked
   // decode-server uses the separately-bundled LGPL libav, not this binary.)
+  // Apple Silicon gets a NATIVE arm64 build: evermeet.cx publishes Intel only,
+  // which runs under Rosetta, or not at all on a Mac without it. That one is
+  // pinned (martin-riedl.de build 1783011502_8.1.2, the build WAVdesk <= 0.1.9
+  // bundled) and checksum-verified; Intel Macs keep evermeet's latest.
   fs::path zip_path  = bin_dir / "_ffmpeg_download.zip";
   fs::path extract_d = bin_dir / "_ffmpeg_extract";
   fs::path target    = bin_dir / "ffmpeg";
@@ -265,7 +280,15 @@ bool ensure_ffmpeg() {
   fs::remove(zip_path, ec);
   fs::remove_all(extract_d, ec);
 
+#if defined(__aarch64__) || defined(__arm64__)
+  const std::string url =
+    "https://ffmpeg.martin-riedl.de/download/macos/arm64/1783011502_8.1.2/ffmpeg.zip";
+  const std::string want_sha =
+    "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c";
+#else
   const std::string url = "https://evermeet.cx/ffmpeg/getrelease/zip";
+  const std::string want_sha;
+#endif
 
   bool ok = download_with_progress(url, zip_path,
     [&](uint64_t bytes, uint64_t total) {
@@ -274,6 +297,11 @@ bool ensure_ffmpeg() {
 
   if (!ok) {
     emit_bootstrap("failed", "ffmpeg", 0, 0, "download failed");
+    fs::remove(zip_path, ec);
+    return false;
+  }
+  if (!want_sha.empty() && sha256_mac(zip_path) != want_sha) {
+    emit_bootstrap("failed", "ffmpeg", 0, 0, "download checksum mismatch");
     fs::remove(zip_path, ec);
     return false;
   }

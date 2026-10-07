@@ -9,6 +9,7 @@ Short hashes are optional and get backfilled; never block a commit on one.
 
 ## 2026-10-07
 
+- **Apple Silicon downloads a native ffmpeg**: when the shared bin has no ffmpeg, `lathe` now fetches a pinned, checksum-verified arm64 build (martin-riedl.de 1783011502_8.1.2) instead of evermeet.cx's Intel-only one, which needed Rosetta (or failed without it). Intel Macs keep evermeet. Normally WAVdesk provisions the suite's arm64 ffmpeg first, so this is the standalone fallback.
 - **`convert --raw-half-size` for camera RAW previews**: LibRaw's half-size mode reads each 2x2 Bayer
   quad as one pixel and skips the demosaic, so a 24 MP RAW converts in 0.25 s instead of 0.95 s (12 MP:
   0.15 s instead of 0.5 s). WAVdesk's icon thumbnails use it; a 512 px thumb from it is ~50 dB from the
