@@ -5,7 +5,8 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 
 **Every commit that changes behavior adds its entry here, in the same commit.** Pure chores
 (formatting, ignore files) are exempt. Cross-repo rounds add a line in each repo they touched.
-Short hashes are optional and get backfilled; never block a commit on one.
+Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
+folded into the change they landed rather than given their own entry.
 
 ## 2026-10-07
 
@@ -59,4 +60,50 @@ Short hashes are optional and get backfilled; never block a commit on one.
   to that archive reproduces the shipped libraries. Version and URL are in lockstep across
   `tools/build-ffmpeg-lgpl-mac.sh`, the notices, and `AboutApp.tsx`: bump all three together.
 
-<!-- Started 2026-08-30 alongside WAVdesk's, for the cross-repo rounds the three share. -->
+## 2026-08-20
+
+- **Version stamps unified at 0.1.6, ~29 MB off the mac app** (`d183062`): every stamp now agrees
+  and the C++ banner derives from `project(VERSION)`. The mac bundle shipped the dylib set twice
+  (Resources/coredist plus the MacOS mirror tools.rs actually uses) and shipped the 11 MB LGPL
+  source tarball to end users; `tauri.macos.conf.json` empties `bundle.resources`.
+
+## 2026-07-16
+
+- **Pinned LGPL ffmpeg build and a shippable mac release pipeline** (`cdd0c84`): builds FFmpeg 8.1.2
+  from the sha256-pinned official source with LGPL-only flags and VideoToolbox enabled, stages the
+  compliance files into coredist, and rejects any GPL or Homebrew linkage in a release build.
+
+## 2026-07-15
+
+- **Ignore macOS Finder metadata** (`48381bb`).
+
+## 2026-07-10
+
+- **VideoToolbox hardware decode on macOS** (`cc8b0f1`, merged in `3b197d2`): the mac decode-server
+  was pure software, so 1080p H.264 cost ~29.5 ms of CPU per frame on the target iMac. It pegged the
+  CPU, the frontend 600 ms stall watchdog fired, and the reconnect re-decoded from a keyframe (the
+  owner's "SUPER laggy and blurry"). VideoToolbox cuts that to ~7.4 ms. It is attached only for
+  H.264/HEVC, so AV1/VP9 open the software dav1d decoder instead of failing on a context they cannot
+  use. The Windows d3d11va path is byte-identical.
+- **Rounded window corners on macOS** (`c7b2d55`, merged in `a93c927`): macOS draws undecorated
+  NSWindows square where the Windows 11 DWM rounds every top-level window for free. The shell clips
+  to a 10 px radius; the drag overlay is excluded so its transparent chip surface never clips.
+- **The About window reads the runtime version** (`40accd5`, merged in `e0b5efa`): it was hardcoded
+  to 1.0.
+- **macOS tool acquisition and a .dmg release pipeline** (`5ea7b3a`, merged in `6ea09dd`): POSIX
+  download through curl, ffmpeg bootstrap into the managed shared bin, and an `exe_dir` fix so the
+  next-to-exe portable tier resolves instead of returning ".". The release script bundles the LGPL
+  libav closure into the .app with `@loader_path` rewrites and ships an ad-hoc signed dmg. Windows
+  paths stay byte-identical.
+- **One drag chip on macOS** (`2866c6b`, merged in `c5bb359`): the native NSDraggingSession image
+  and the overlay webview both rendered a chip, the field "double chip". The overlay is Linux-only
+  now (XDND still uses it) and stays hidden on mac; every hide and cleanup path remains
+  unconditional so a stray-shown overlay still tears down.
+- **libav linked on macOS, and overwrite-in-place no longer eats the original** (`427a482`, merged
+  in `bb84ab1`): the ffmpeg link block was gated on WIN32, so `lathe libav-version` reported "not
+  built in" on mac, which fails the Latch capability probe and kills the WAVdesk video decode
+  contract. Separately, converting to the same format with overwrite passed output == input; ffmpeg
+  refuses in-place editing with -22, and the failure path then removed the output, deleting the only
+  copy. Output now goes to a sibling temp and is renamed over the original on success.
+
+<!-- Started 2026-08-30 alongside WAVdesk's, for the cross-repo rounds the three share; the sections before it backfilled 2026-10-08 from the 15 commits before (merges folded). -->
