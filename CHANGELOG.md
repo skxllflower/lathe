@@ -8,6 +8,11 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-01
+
+- **The Mac build runs on macOS 12 and later**: the `lathe` core, its libav dylibs and the bundled libjpeg were all built for the build Mac's own OS (minos 26.0), so dyld refused them on macOS 12-25 (Lathe could not convert; WAVdesk could not encode edits of lossy files). The core, the LGPL ffmpeg build and the GUI now target 12.0, and the release script aborts on any Mach-O above that floor.
+- **libjpeg is built from pinned source, statically**: LibRaw's DNG lossy decoder used to link Homebrew's jpeg-turbo, which was copied into the bundle as an unvetted dylib built for the host OS. `tools/build-libjpeg-turbo-mac.sh` builds libjpeg-turbo 3.2.0 (checksum-verified) for macOS 12; its IJG/BSD/zlib notice now ships in the licenses folder, THIRD_PARTY_NOTICES.txt and the About window. The release script refuses any Homebrew library outright.
+
 ## 2026-10-07
 
 - **Version 0.1.8.** Ships the camera RAW half-size convert (WAVdesk icon thumbnails) and the native arm64 ffmpeg bootstrap on Apple Silicon.

@@ -9,6 +9,14 @@
 #
 # libav linkage: release builds require the pinned LGPL-only FFmpeg prefix.
 # tools/build-ffmpeg-lgpl-mac.sh creates it from official source when absent.
+# libjpeg (LibRaw's DNG lossy codec) links statically from a pinned source
+# build too (tools/build-libjpeg-turbo-mac.sh), never Homebrew's.
+#
+# macOS floor: every Mach-O in the bundle targets MACOS_MIN (12.0, WAVdesk's
+# floor). Homebrew bottles and an unset deployment target both inherit the
+# build host's OS, and dyld then refuses the core on every older macOS; the
+# prefixes are rebuilt when they target anything else, and step 3 aborts on
+# any Mach-O above the floor.
 #
 # The Windows bundle config is untouched: we pass --bundles app,dmg on the CLI
 # (tauri.conf still says nsis) so Windows builds stay byte-identical.
@@ -52,6 +60,21 @@ CORE="lathe"
 PRODUCT="Lathe"
 BUNDLE="$TAURI/target/release/bundle"
 FFMPEG_LGPL="${FFMPEG_LGPL:-$HOME/Dev/ffmpeg-lgpl-mac}"
+LIBJPEG_TURBO_MAC="${LIBJPEG_TURBO_MAC:-$HOME/Dev/libjpeg-turbo-mac}"
+MACOS_MIN="${MACOS_MIN:-12.0}"
+export MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN" MACOS_MIN
+
+# The minos of a Mach-O (LC_BUILD_VERSION, or the older LC_VERSION_MIN_MACOSX).
+minos_of() {
+  otool -l "$1" | awk '
+    /LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/ { b = 1 }
+    b && $1 == "minos"   { print $2; exit }
+    b && $1 == "version" { print $2; exit }'
+}
+# True when version $1 <= $2 (dotted, numeric per component).
+version_le() {
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$1" ]
+}
 
 step() { printf '\n\033[36m[%s] %s\033[0m\n' "$1" "$2"; }
 
@@ -71,7 +94,12 @@ bundle_dylibs() {
     while IFS= read -r line; do
       dep="$(printf '%s\n' "$line" | awk '{print $1}')"
       case "$dep" in
-        "$FFMPEG_LGPL"/*|/usr/local/*|/opt/homebrew/*)
+        /usr/local/*|/opt/homebrew/*)
+          echo "ERROR: $(basename "$f") links $dep: a Homebrew library inherits the build" >&2
+          echo "  host's macOS and its license is unvetted. Build it from source instead." >&2
+          exit 1
+          ;;
+        "$FFMPEG_LGPL"/*)
           base="$(basename "$dep")"
           target="$dest_dir/$base"
           if [ ! -e "$target" ]; then
@@ -101,9 +129,21 @@ else
   if [ ! -f "$FFMPEG_LGPL/lib/pkgconfig/libavcodec.pc" ]; then
     echo "  LGPL FFmpeg prefix not found; building it now"
     FFMPEG_LGPL="$FFMPEG_LGPL" "$REPO/tools/build-ffmpeg-lgpl-mac.sh"
+  elif [ "$(minos_of "$FFMPEG_LGPL/lib/libavutil.dylib")" != "$MACOS_MIN" ]; then
+    echo "  LGPL FFmpeg prefix targets macOS $(minos_of "$FFMPEG_LGPL/lib/libavutil.dylib"), not $MACOS_MIN; rebuilding it"
+    FFMPEG_LGPL="$FFMPEG_LGPL" "$REPO/tools/build-ffmpeg-lgpl-mac.sh"
   fi
-  echo "  linking LGPL libav from $FFMPEG_LGPL"
-  PKG_CONFIG_LIBDIR="$FFMPEG_LGPL/lib/pkgconfig" cmake -B "$BUILD" -S "$REPO" -DCMAKE_BUILD_TYPE=Release
+  if [ ! -f "$LIBJPEG_TURBO_MAC/lib/libjpeg.a" ] || \
+     ! otool -l "$LIBJPEG_TURBO_MAC/lib/libjpeg.a" | awk '$1 == "minos" { print $2 }' | sort -u | grep -qx "$MACOS_MIN"; then
+    echo "  libjpeg-turbo prefix missing or not built for macOS $MACOS_MIN; building it now"
+    LIBJPEG_TURBO_MAC="$LIBJPEG_TURBO_MAC" "$REPO/tools/build-libjpeg-turbo-mac.sh"
+  fi
+  echo "  linking LGPL libav from $FFMPEG_LGPL, static libjpeg-turbo from $LIBJPEG_TURBO_MAC (macOS $MACOS_MIN+)"
+  PKG_CONFIG_LIBDIR="$FFMPEG_LGPL/lib/pkgconfig" cmake -B "$BUILD" -S "$REPO" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_MIN" \
+    -DJPEG_INCLUDE_DIR="$LIBJPEG_TURBO_MAC/include" \
+    -DJPEG_LIBRARY_RELEASE="$LIBJPEG_TURBO_MAC/lib/libjpeg.a" \
+    -DJPEG_LIBRARY="$LIBJPEG_TURBO_MAC/lib/libjpeg.a"
   PKG_CONFIG_LIBDIR="$FFMPEG_LGPL/lib/pkgconfig" cmake --build "$BUILD" -j6
 fi
 CORE_SRC="$BUILD/$CORE"
@@ -135,7 +175,8 @@ chmod 0755 "$COREDIST/$CORE"
 for compliance_file in \
   "$FFMPEG_LGPL"/ffmpeg-*-source.tar.xz \
   "$FFMPEG_LGPL/lathe-ffmpeg-configure.txt" \
-  "$FFMPEG_LGPL/COPYING.LGPLv2.1"; do
+  "$FFMPEG_LGPL/COPYING.LGPLv2.1" \
+  "$LIBJPEG_TURBO_MAC/LICENSE-libjpeg-turbo.md"; do
   [ -f "$compliance_file" ] || { echo "missing LGPL compliance file: $compliance_file" >&2; exit 1; }
   cp -f "$compliance_file" "$COREDIST/"
 done
@@ -189,7 +230,7 @@ done
 
 LICENSES_DIR="$APP/Contents/Resources/licenses"
 mkdir -p "$LICENSES_DIR"
-for doc in "$COREDIST"/*.txt "$COREDIST/COPYING.LGPLv2.1"; do
+for doc in "$COREDIST"/*.txt "$COREDIST"/*.md "$COREDIST/COPYING.LGPLv2.1"; do
   [ -e "$doc" ] || continue
   cp -f "$doc" "$LICENSES_DIR/"
 done
@@ -199,6 +240,23 @@ echo "  otool -L (shipped core inside .app):"
 otool -L "$MACOS_DIR/coredist/$CORE" | sed -n '2,40p'
 if otool -L "$MACOS_DIR/coredist/$CORE" | tail -n +2 | grep -qE "$FFMPEG_LGPL|/usr/local/|/opt/homebrew/"; then
   echo "ERROR: shipped core still references absolute Homebrew or build-prefix libs." >&2
+  exit 1
+fi
+
+echo "  macOS floor (every Mach-O must target <= $MACOS_MIN):"
+FLOOR_BAD=0
+while IFS= read -r -d '' bin; do
+  file -b "$bin" | grep -q 'Mach-O' || continue
+  min="$(minos_of "$bin")"
+  echo "    ${bin#"$APP"/}: $min"
+  if [ -z "$min" ] || ! version_le "$min" "$MACOS_MIN"; then FLOOR_BAD=1; fi
+done < <(find "$APP" -type f -print0)
+LSMIN="$(defaults read "$APP/Contents/Info" LSMinimumSystemVersion 2>/dev/null || echo unset)"
+echo "    LSMinimumSystemVersion: $LSMIN"
+[ "$LSMIN" = "$MACOS_MIN" ] || FLOOR_BAD=1
+if [ "$FLOOR_BAD" = "1" ]; then
+  echo "ERROR: a Mach-O targets a macOS above $MACOS_MIN (or LSMinimumSystemVersion differs):" >&2
+  echo "  dyld refuses it on older macOS." >&2
   exit 1
 fi
 

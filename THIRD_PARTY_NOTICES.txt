@@ -56,3 +56,17 @@ Distribution License (CDDL) 1.0.
 
 LibRaw is Copyright (C) 2008-2024 LibRaw LLC, and incorporates code from
 dcraw.c by Dave Coffin.
+
+libjpeg-turbo (macOS)
+---------------------
+On macOS, LibRaw's DNG lossy decoder uses libjpeg-turbo 3.2.0, statically
+linked, unmodified. This software is based in part on the work of the
+Independent JPEG Group.
+
+  License:  IJG License, Modified (3-clause) BSD License, and zlib License
+            (full texts: Lathe.app/Contents/Resources/licenses/LICENSE-libjpeg-turbo.md)
+  Project:  https://libjpeg-turbo.org
+  Source:   https://github.com/libjpeg-turbo/libjpeg-turbo (version 3.2.0, unmodified)
+
+libjpeg-turbo is Copyright (C) 2009-2026 D. R. Commander and contributors,
+and incorporates code Copyright (C) 1991-2020 Thomas G. Lane, Guido Vollbeding.

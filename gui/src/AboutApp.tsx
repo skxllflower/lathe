@@ -119,6 +119,13 @@ export default function AboutApp() {
           v1.0. LibRaw source is available at <Url href="https://www.libraw.org" />
         </Notice>
 
+        <Notice title="libjpeg-turbo (macOS)">
+          On macOS, LibRaw decodes lossy DNG files with libjpeg-turbo, used
+          under the IJG, BSD-3-Clause and zlib licenses (full texts in the
+          app's licenses folder). This software is based in part on the work
+          of the Independent JPEG Group. Source: <Url href="https://libjpeg-turbo.org" />
+        </Notice>
+
         <Notice title="Other components">
           Lathe also includes software distributed under permissive licenses
           (MIT, Apache-2.0, BSD), including the Tauri framework, the Rust

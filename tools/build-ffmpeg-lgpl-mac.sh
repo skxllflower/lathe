@@ -10,6 +10,10 @@ WORK="${FFMPEG_BUILD_DIR:-$HOME/Dev/ffmpeg-lgpl-build}"
 ARCHIVE="$WORK/ffmpeg-$VERSION.tar.xz"
 SOURCE="$WORK/ffmpeg-$VERSION"
 URL="https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz"
+# The shipped dylibs' macOS floor. Unset, clang targets the build host's OS and dyld refuses them on
+# anything older (WAVdesk loads them on macOS 12+).
+MACOS_MIN="${MACOS_MIN:-12.0}"
+export MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN"
 
 mkdir -p "$WORK"
 if [ ! -f "$ARCHIVE" ]; then
@@ -43,6 +47,8 @@ CONFIGURE_FLAGS=(
   --enable-videotoolbox
   --enable-audiotoolbox
   --enable-securetransport
+  "--extra-cflags=-mmacosx-version-min=$MACOS_MIN"
+  "--extra-ldflags=-mmacosx-version-min=$MACOS_MIN"
 )
 
 rm -rf "$PREFIX"
@@ -64,4 +70,10 @@ if grep -Rqs -- '--enable-gpl\|--enable-nonfree' "$PREFIX/lib/pkgconfig"; then
   exit 1
 fi
 
-echo "LGPL FFmpeg $VERSION installed at $PREFIX"
+BUILT_MIN="$(otool -l "$PREFIX/lib/libavutil.dylib" | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2; exit}')"
+if [ "$BUILT_MIN" != "$MACOS_MIN" ]; then
+  echo "ERROR: libavutil targets macOS $BUILT_MIN, expected $MACOS_MIN." >&2
+  exit 1
+fi
+
+echo "LGPL FFmpeg $VERSION (macOS $MACOS_MIN+) installed at $PREFIX"
