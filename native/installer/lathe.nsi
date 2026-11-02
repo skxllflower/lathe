@@ -135,13 +135,9 @@ Section "Install"
   !insertmacro WAIT_UNLOCKED "$INSTDIR\${MAINEXE}" "Lathe"
   !insertmacro WAIT_UNLOCKED "$INSTDIR\coredist\lathe.exe" "A Lathe conversion (Lathe, or WAVdesk using it)"
 
-  ; a clean coredist\ each install (no DLL left from an older libav), and the Tauri app's WebView2 profile when this
-  ; installs over it
+  ; a clean coredist\ each install (no DLL left from an older libav). The Tauri app's WebView2 profile stays: the
+  ; first launch reads its saved settings from it (tauri_import.cpp), and the uninstaller removes it
   !insertmacro SAFE_RMDIR_R "$INSTDIR\coredist" "\${PRODUCT}\coredist"
-  ReadEnvStr $0 "LOCALAPPDATA"
-  ${If} $0 != ""
-    !insertmacro SAFE_RMDIR_R "$0\com.vacantsystems.lathe" "\com.vacantsystems.lathe"
-  ${EndIf}
 
   SetOutPath "$INSTDIR"
   File /r "${STAGE}\*.*"
@@ -260,8 +256,13 @@ Section "Uninstall"
     RMDir "$0\Vacant Systems"
   ${EndIf}
 
-  ; the user's data only when asked (the shared cookies are logins: last one out and asked)
+  ; the Tauri app's WebView2 profile (an install over it left it for the settings carry-over, long since done)
   ReadEnvStr $1 "LOCALAPPDATA"
+  ${If} $1 != ""
+    !insertmacro SAFE_RMDIR_R "$1\com.vacantsystems.lathe" "\com.vacantsystems.lathe"
+  ${EndIf}
+
+  ; the user's data only when asked (the shared cookies are logins: last one out and asked)
   ${If} $1 != ""
   ${AndIf} $DeleteData == ${BST_CHECKED}
     !insertmacro SAFE_RMDIR_R "$1\Vacant Systems\Lathe" "\Vacant Systems\Lathe"

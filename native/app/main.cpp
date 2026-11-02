@@ -174,6 +174,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     } else if (!core.empty()) {
         lathe::registerSelf(core);
     }
+    lathe::importTauriSettings();   // (once: the Tauri app's format, destination and presets, before the window reads them)
 
     auto* ed = new Editor(host, lathe::LatheApp::kWidth, lathe::LatheApp::kHeight);
     ed->setResizable(lathe::LatheApp::kWidth, lathe::LatheApp::kHeight);   // (tauri.conf: resizable, never smaller than its first size)

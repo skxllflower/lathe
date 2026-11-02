@@ -62,7 +62,7 @@ set(LATHE_SHARED_SOURCES
     ${WD}/dialog_window.cpp ${WD}/popup_motion.cpp ${WD}/window_place.cpp ${WD}/window_fit.cpp
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp)
-set(LATHE_APP_SOURCES app/main.cpp app/lathe_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp)
+set(LATHE_APP_SOURCES app/main.cpp app/lathe_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/tauri_import.cpp)
 
 if(APPLE)
     set(LATHE_EXE_NAME Lathe)        # (Lathe.app, as the Tauri bundle was named)

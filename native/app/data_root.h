@@ -16,4 +16,8 @@ std::string ownCore();
 // there); siblings kept, written to a temp file and renamed over
 void registerSelf(const std::string& core);
 
+// The Tauri Lathe's saved settings and presets (its webview's localStorage) copied into native_ui.json, once
+// (settings.json "tauri_imported"); never over a value already there, never in a headless run. Returns how many keys.
+int importTauriSettings();
+
 }  // namespace lathe
