@@ -234,10 +234,9 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         ed->requestRepaint();
     };
 
-    // the binary's state (tool_binary_probe), off the UI thread: Lathe's capability probe spawns it once. Not in a run
-    // that only looks (--screenshot / --dump-tree with no steps): it exits at once, and a probe still starting then
-    // leaves its child suspended (core_process.cpp starts it suspended until it is in the kill-on-close job)
-    if (!quiet || vpf::hasStandaloneArg("--steps")) {
+    // the binary's state (tool_binary_probe), off the UI thread: Lathe's capability probe spawns it once (born inside
+    // the kill-on-close job, win_spawn.h, so a run that exits mid-probe takes it along)
+    {
         std::shared_ptr<vpf::gui::UiQueue> q = ed->uiQueue();
         std::thread([q, app, core] {
             wdn::ext::ToolStatus st = wdn::ext::probeTool("lathe");
