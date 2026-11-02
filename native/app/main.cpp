@@ -239,8 +239,11 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     // leaves its child suspended (core_process.cpp starts it suspended until it is in the kill-on-close job)
     if (!quiet || vpf::hasStandaloneArg("--steps")) {
         std::shared_ptr<vpf::gui::UiQueue> q = ed->uiQueue();
-        std::thread([q, app] {
-            const wdn::ext::ToolStatus st = wdn::ext::probeTool("lathe");
+        std::thread([q, app, core] {
+            wdn::ext::ToolStatus st = wdn::ext::probeTool("lathe");
+            // (the window shows "configured" in the ok tone, any other tier as a fallback: this app's own core is no
+            // fallback, whichever tier found it)
+            if (st.resolved && !core.empty() && std::filesystem::u8path(st.path) == std::filesystem::u8path(core)) st.source = "configured";
             q->post([app, st] { app->setStatus(st); });
         }).detach();
     }
