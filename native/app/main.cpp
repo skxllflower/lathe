@@ -88,7 +88,8 @@ LRESULT CALLBACK handoffProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 // (before main) false: another Lathe has this launch's arguments, and this process exits
 const bool g_sole = [] {
-    if (headless()) return true;
+    // (vpf has not parsed the arguments yet: before main, the command line itself)
+    for (const std::string& a : ownArgs()) if (a == "--steps" || a == "--screenshot" || a == "--dump-tree") return true;
     CreateMutexW(nullptr, TRUE, kMutex);
     if (GetLastError() != ERROR_ALREADY_EXISTS) return true;
     for (int tries = 0; tries < 40; ++tries) {   // (the first launch may still be starting: up to 2 s for its window)
