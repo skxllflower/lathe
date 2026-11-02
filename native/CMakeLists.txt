@@ -34,7 +34,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        4903c46f8bfd95d8b6167750e9da223f9b93774b   # feat/lathe-parity (feat/native-shell 4c68c3b2 + the Latch hooks + Lathe parity)
+    GIT_TAG        813b9a8aa4f89c5affc92e5ea11711a1bea2d4b0   # claude/native-latch-hooks-d65df5 (= feat/lathe-parity: native-shell 4c68c3b2 + the Latch hooks + Lathe parity + child tips)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")

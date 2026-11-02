@@ -10,6 +10,7 @@ folded into the change they landed rather than given their own entry.
 
 ## 2026-11-02
 
+- **Native Lathe: tooltips draw over everything**: the WAVdesk pin moves to 813b9a8a, where the shared window draws its tip in a child above the others and asks child widgets for theirs too (written for the Latch windows); the text field no longer covers a tip.
 - **Native Lathe: a convert's end is never held up by another one**: the WAVdesk pin moves to 4903c46f, the parity branch merged with WAVdesk's Latch hooks, which carries the shared launcher's fix that a child inherits only its own std handles. A child started at the same moment used to hold this one's output pipe open, so its finish waited on the other's exit.
 - **Native Lathe says why**: hovering a failed output shows lathe's error; an input shows its full path (and "Won't convert to X: kind mismatch"); the core chip, the Convert button (why it is disabled or skips some) and the icon buttons show the Tauri tooltips. The WAVdesk pin moves to 637234e1 (feat/lathe-parity), where the shared window reports its tips and runs them itself in a standalone app.
 - **Native Lathe: Overwrite originals across a format change removes the original** after a clean convert, as the Tauri app did; a failed or cancelled convert keeps it. It used to leave both files.
