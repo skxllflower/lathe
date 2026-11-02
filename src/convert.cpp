@@ -56,9 +56,17 @@ static std::string ffmpeg_path() {
 // created. The ".wdtmp<pid>" marker is WAVdesk's staging-temp family: its
 // watcher never indexes one and its stale-temp sweep reaps a crash leftover.
 // The format extension stays last because ffmpeg picks the muxer from it.
-static fs::path staging_path_for(const fs::path& out_path) {
+// An EMPTY target that is not the input is a caller's name reservation (the
+// native GUI's unique_output creates it before spawning us, so two jobs never
+// race for one name): written straight over, never staged, so a cancel's hard
+// kill leaves nothing beyond that reservation, which the caller removes. A
+// staged temp would outlive the kill (the kill skips our cleanup).
+static fs::path staging_path_for(const fs::path& in_path, const fs::path& out_path) {
   std::error_code ec;
   if (!fs::exists(out_path, ec) && !ec) return out_path;
+  std::error_code sz_ec, eq_ec;
+  if (fs::file_size(out_path, sz_ec) == 0 && !sz_ec && !fs::equivalent(in_path, out_path, eq_ec) && !eq_ec)
+    return out_path;
 #ifdef _WIN32
   const unsigned long pid = GetCurrentProcessId();
 #else
@@ -270,7 +278,7 @@ ConvertResult convert(const std::string& input,
   // "Overwrite originals" with an unchanged format passes output == input
   // (ffmpeg: "cannot edit existing files in-place", exit -22). Every platform
   // stages; see staging_path_for.
-  const fs::path ffmpeg_out = staging_path_for(out_path);
+  const fs::path ffmpeg_out = staging_path_for(in_path, out_path);
   const bool staged = ffmpeg_out != out_path;
 
   // Camera RAW inputs demosaic through LibRaw into a 16-bit PPM first;
@@ -446,7 +454,7 @@ ConvertResult extract(const std::string& input,
   if (out_path.has_parent_path()) {
     fs::create_directories(out_path.parent_path(), ec);
   }
-  const fs::path ffmpeg_out = staging_path_for(out_path);
+  const fs::path ffmpeg_out = staging_path_for(in_path, out_path);
   const bool staged = ffmpeg_out != out_path;
 
   double total_duration = probe_duration_seconds(input);
