@@ -34,7 +34,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        65cd0a8cf1a537c9e0c8a7236c59d4fecd1ee390   # feat/native-shell (children born in their kill-on-close job)
+    GIT_TAG        4c68c3b21b23a4420e332c8ad3e651027cdc01d3   # feat/native-shell (Lathe's output drag carries the Tauri chip)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -60,7 +60,7 @@ set(LATHE_SHARED_SOURCES
     ${WD}/lathe_window.cpp ${WD}/ext_window.cpp ${WD}/external_tools.cpp
     ${WD}/look.cpp ${WD}/skin.cpp ${WD}/skin_focused.cpp ${WD}/skin_vx.cpp ${WD}/skin_zen.cpp
     ${WD}/dialog_window.cpp ${WD}/popup_motion.cpp ${WD}/window_place.cpp ${WD}/window_fit.cpp
-    ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp
+    ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp ${WD}/drag_chip.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp)
 set(LATHE_APP_SOURCES app/main.cpp app/lathe_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/tauri_import.cpp)
 
