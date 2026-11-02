@@ -29,3 +29,6 @@ gui/src-tauri/coredist/*
 
 # build logs never belong in history
 *.log
+
+# Native GUI (vpf) build trees
+native/build-release/
