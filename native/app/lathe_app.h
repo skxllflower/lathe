@@ -2,8 +2,11 @@
 // window instead of a popup over WAVdesk's main one. What it adds is what the Tauri ConvertApp's own frame had:
 //   the title strip as the window's frame (dragged to move it), Minimize beside the X, the look chooser (the skins:
 //   Dev look, VX, Focused, Zen Dark) and About (about_window.h)
-//   Export to...: the move itself (tools.rs fs_move: a free name in the folder, rename else copy + delete)
-//   Escape: nothing (in WAVdesk it closes the tool window; here it would quit the app)
+//   Export to...: the move itself (tools.rs fs_move: a free name in the folder, rename else copy + delete), each row then
+//   told where its file landed (LatheWindow::exported)
+//   Escape: clears the input selection (escapeClears; in WAVdesk it closes the tool window, here it would quit the app)
+//   the tooltips (ownTips: WAVdesk's main window shows them for its tool windows; here the window runs them) and the
+//   app's own icon picture in the title strip
 #pragma once
 #include "lathe_window.h"
 #include <functional>
@@ -19,7 +22,9 @@ public:
     std::string skinName = "dev";
 
     bool onMouseDown(const vpf::gui::MouseEvent& e) override;
-    bool onKey(const vpf::gui::KeyEvent& e) override;
+
+    // Export to...'s move, on a worker; the rows follow where each file landed
+    void exportMove(const std::vector<std::string>& paths, const std::string& dir);
 
     // tools.rs fs_move: each file to a free name in `dir` (" (2)" ...), renamed, else copied and the source deleted;
     // blocking (a worker thread's). Returns where each landed ("" = failed)
@@ -27,6 +32,7 @@ public:
 
 protected:
     void titleExtras(std::vector<El>& out, int& right) override;
+    bool drawTitleIcon(const Paint& p, int cx, int cy, int px) const override;
     void act(const std::string& id, const vpf::gui::MouseEvent& e) override;
 };
 

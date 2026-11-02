@@ -34,7 +34,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        4c68c3b21b23a4420e332c8ad3e651027cdc01d3   # feat/native-shell (Lathe's output drag carries the Tauri chip)
+    GIT_TAG        637234e13622e28c5a749fac6c14fc2b0a71343f   # feat/lathe-parity (off feat/native-shell: tooltips, overwrite, keys, sizes)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -62,7 +62,7 @@ set(LATHE_SHARED_SOURCES
     ${WD}/dialog_window.cpp ${WD}/popup_motion.cpp ${WD}/window_place.cpp ${WD}/window_fit.cpp
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp ${WD}/drag_chip.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp)
-set(LATHE_APP_SOURCES app/main.cpp app/lathe_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/tauri_import.cpp)
+set(LATHE_APP_SOURCES app/main.cpp app/lathe_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/tauri_import.cpp app/app_icon.cpp)
 
 if(APPLE)
     set(LATHE_EXE_NAME Lathe)        # (Lathe.app, as the Tauri bundle was named)
@@ -79,6 +79,8 @@ target_compile_definitions(lathe_gui PRIVATE LATHE_VERSION="${LATHE_VERSION}")
 # the VX skin's packs, embedded as WAVdesk embeds them (skin_vx.cpp reads kWavdeskVx)
 file(GLOB LATHE_VX_FILES CONFIGURE_DEPENDS ${wavdesk_SOURCE_DIR}/native/assets/vx/*.json ${wavdesk_SOURCE_DIR}/native/assets/vx/*.pack)
 vpf_embed_assets(lathe_gui SYMBOL kWavdeskVx FILES ${LATHE_VX_FILES})
+# the app's own icon picture (the title strip, About: app_icon.cpp)
+vpf_embed_assets(lathe_gui SYMBOL kLatheIcon FILES ${CMAKE_CURRENT_SOURCE_DIR}/../gui/src/assets/app-icon.png)
 if(WIN32)
     set(LATHE_ICON ${CMAKE_CURRENT_SOURCE_DIR}/../gui/src-tauri/icons/icon.ico)
     configure_file(app/lathe_gui.rc.in ${CMAKE_CURRENT_BINARY_DIR}/lathe_gui.rc @ONLY)

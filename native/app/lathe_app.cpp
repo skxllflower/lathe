@@ -1,8 +1,10 @@
 #include "lathe_app.h"
+#include "app_icon.h"
 #include "look.h"
 #include "skin.h"
 #include <algorithm>
 #include <filesystem>
+#include <thread>
 #include <vpf/gui/editor.h>
 
 namespace lathe {
@@ -14,17 +16,31 @@ using vpf::gui::Rect;
 using wdn::Style;
 using wdn::skin;
 
-LatheApp::LatheApp() { name = "lathe-app"; }
+LatheApp::LatheApp() {
+    name = "lathe-app";
+    ownTips = true;
+    escapeClears = true;
+}
+
+bool LatheApp::drawTitleIcon(const Paint& p, int cx, int cy, int px) const { return drawAppIcon(p, cx, cy, px); }
+
+void LatheApp::exportMove(const std::vector<std::string>& paths, const std::string& dir) {
+    std::shared_ptr<vpf::gui::UiQueue> q = editor() ? editor()->uiQueue() : nullptr;
+    std::weak_ptr<bool> alive = alive_;
+    std::thread([this, q, alive, paths, dir] {
+        const std::vector<std::string> landed = moveTo(paths, dir);
+        if (!q) return;
+        q->post([this, alive, paths, landed] {
+            if (alive.expired()) return;
+            for (size_t i = 0; i < paths.size() && i < landed.size(); ++i) exported(paths[i], landed[i]);
+        });
+    }).detach();
+}
 
 // the title strip is the window's frame: a press on it (not on a button) moves the window, as the Tauri drag region did
 bool LatheApp::onMouseDown(const vpf::gui::MouseEvent& e) {
     if (e.y < kTitle && hit(e.x, e.y).empty() && editor()) { editor()->beginWindowDrag(); return true; }
     return LatheWindow::onMouseDown(e);
-}
-
-bool LatheApp::onKey(const vpf::gui::KeyEvent& e) {
-    if (e.key == vpf::gui::Key::Escape && !e.ctrl && !e.alt && !e.shift) return true;
-    return LatheWindow::onKey(e);
 }
 
 // right to left, left of the X: Minimize, the look, About (the Tauri status bar's info button, here beside the look)

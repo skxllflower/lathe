@@ -202,10 +202,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     };
     app->onClose = [ed] { if (ed->closeRequested()) ed->closeStandaloneWindow(); };
 
-    // Export to...: the move on a worker (tools.rs fs_move); the window's rows follow the files once they land
-    app->onExport = [](const std::vector<std::string>& paths, const std::string& dir) {
-        std::thread([paths, dir] { lathe::LatheApp::moveTo(paths, dir); }).detach();
-    };
+    // Export to...: the move on a worker (tools.rs fs_move); the window's rows follow where the files landed
+    app->onExport = [app](const std::vector<std::string>& paths, const std::string& dir) { app->exportMove(paths, dir); };
 
     // About: one window, raised when open
     auto about = std::make_shared<lathe::AboutWindow*>(nullptr);

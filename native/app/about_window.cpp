@@ -1,4 +1,5 @@
 #include "about_window.h"
+#include "app_icon.h"
 #include "look.h"
 #include "skin.h"
 #include <algorithm>
@@ -86,8 +87,10 @@ void AboutWindow::layout() {
     const vpf::gui::Color line = skin().style("tool.footer").line, muted = lab.ink, primary = grid.ink, secondary = title.soft;
     auto fill = [&](Rect r, vpf::gui::Color c) { add(r, all, "", true, [c](const vpf::gui::Paint& p, const Rect& rr, bool) { p.canvas.fillRect(p.dev(rr), c); }); };
 
-    // identity
-    int y = kTitle + 22;
+    // identity: the app's icon (w-14 h-14 mb-2), then the name
+    int y = kTitle + 20;
+    add({(W - 56) / 2, y, 56, 56}, all, "", true, [](const vpf::gui::Paint& p, const Rect& r, bool) { drawAppIcon(p, r.x + r.w / 2, r.y + r.h / 2, 56); });
+    y += 56 + 8;
     auto centred = [&](const std::string& s, float px, vpf::gui::Color c, bool bold) {
         label(all, (W - measure(s, px, bold)) / 2, y, s, px, c, bold);
         y += (int)px + 6;

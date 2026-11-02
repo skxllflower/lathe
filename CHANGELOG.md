@@ -8,6 +8,15 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-02
+
+- **Native Lathe says why**: hovering a failed output shows lathe's error; an input shows its full path (and "Won't convert to X: kind mismatch"); the core chip, the Convert button (why it is disabled or skips some) and the icon buttons show the Tauri tooltips. The WAVdesk pin moves to 637234e1 (feat/lathe-parity), where the shared window reports its tips and runs them itself in a standalone app.
+- **Native Lathe: Overwrite originals across a format change removes the original** after a clean convert, as the Tauri app did; a failed or cancelled convert keeps it. It used to leave both files.
+- **Native Lathe: Export to... rows follow a renamed move**: a file that lands as "name (2)" is now tracked there, so Show in folder and drag-out keep working (the app reports where each move landed instead of the window guessing by name).
+- **Native Lathe keys and gestures**: Delete removes the selected rows of the list last touched (outputs leave the log, files stay), Escape clears the input selection, each finished output row slides in a "Clear from log" X, and dragging an input row away removes it.
+- **Native Lathe no longer stalls on big folders**: input sizes are read off the UI thread, 64 at a time, so a 2000-file folder or a network share keeps the window responsive.
+- **Native Lathe shows its own icon** in the title strip and the About window (gui/src/assets/app-icon.png, embedded, area-downscaled per size).
+
 ## 2026-11-01
 
 - **Native Lathe: dragging an output out carries the Tauri drag chip**: the file's name, plus "+N" for the rest of the picked outputs, instead of the OS's plain file picture. The WAVdesk pin moves to 4c68c3b2, where the shared Lathe window draws WAVdesk's own port of the chip (shell/drag_chip.cpp, now compiled here too) through vpf's drag-image hook.
