@@ -4,6 +4,7 @@
 
 #if !defined(_WIN32)
 namespace lathe {
+bool setupRequested() { return false; }
 int setupCommand(const std::vector<std::string>&) { return -1; }   // (the manager's apps are Windows first)
 }  // namespace lathe
 #else
@@ -18,6 +19,7 @@ int setupCommand(const std::vector<std::string>&) { return -1; }   // (the manag
 #include <shobjidl.h>
 #include <algorithm>
 #include <cstdio>
+#include <cwchar>
 #include <cwctype>
 #include <filesystem>
 
@@ -27,7 +29,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// (lathe.nsi's defines; constants only: this runs before main, when other files' statics may not be built yet)
+// (lathe.nsi's defines. Every name a compile-time constant, never a std::wstring global: WAVdesk once ran its setup from
+// a static initializer before its string key globals were built, and the empty keys opened the HKLM root itself)
 const wchar_t kProduct[] = L"Lathe";
 const wchar_t kPublisher[] = L"Vacant Systems";
 const wchar_t kMainExe[] = L"lathe-gui.exe";
@@ -37,6 +40,8 @@ const wchar_t kDirKey[] = L"Software\\vacantsystems\\Lathe";
 const wchar_t kDirKeyParent[] = L"Software\\vacantsystems";
 const wchar_t kVerbKey[] = L"Software\\Classes\\*\\shell\\LatheConvert";
 const wchar_t kSubKey[] = L"Software\\Classes\\Lathe.Convert";
+const wchar_t kTestVerbs[] = L"Software\\Vacant Systems\\Manager Test\\Verbs\\Lathe";   // (a test root's verbs, under HKCU)
+const wchar_t kTestVerbsParent[] = L"Software\\Vacant Systems\\Manager Test\\Verbs";
 const wchar_t kMutex[] = L"Local\\VacantSystems.Lathe.Native";   // (main.cpp's one-copy mutex: Lathe is running)
 
 // the "Convert with Lathe" cascade (lathe.nsi CONVERT_VERB): the key orders the submenu, the format is --format's
@@ -71,6 +76,9 @@ struct Where {
     fs::path core() const { return dir / L"coredist" / L"lathe.exe"; }
     HKEY entryHive() const { return test() ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE; }
     const wchar_t* entryKey() const { return test() ? kTestKey : kUninstKey; }
+    // Explorer's verbs: HKLM\Software\Classes, a test root's at the same paths under HKCU kTestVerbs
+    HKEY verbHive() const { return test() ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE; }
+    std::wstring verbKey(const wchar_t* key) const { return test() ? std::wstring(kTestVerbs) + L"\\" + key : std::wstring(key); }
 };
 
 // ---- the registry (a 64-bit process: HKLM's 64-bit view, the installer's SetRegView 64) ----
@@ -80,12 +88,17 @@ bool setStr(HKEY k, const wchar_t* name, const std::wstring& v) {
 }
 bool setDword(HKEY k, const wchar_t* name, DWORD v) { return RegSetValueExW(k, name, 0, REG_DWORD, (const BYTE*)&v, sizeof v) == ERROR_SUCCESS; }
 
+// a sub-key path that names a key under the hive, never the hive itself ("" or a leading backslash opens the root)
+bool underHive(const std::wstring& path) { return path.size() > 9 && path[0] != L'\\' && path.find(L'\\') != std::wstring::npos; }
+
 HKEY create(HKEY hive, const std::wstring& path) {
+    if (!underHive(path)) { say("refused to write a registry key that names no key under the hive"); return nullptr; }
     HKEY k = nullptr;
     return RegCreateKeyExW(hive, path.c_str(), 0, nullptr, 0, KEY_WRITE | KEY_WOW64_64KEY, nullptr, &k, nullptr) == ERROR_SUCCESS ? k : nullptr;
 }
 
 bool removeKey(HKEY hive, const std::wstring& path) {
+    if (!underHive(path)) { say("refused to delete a registry key that names no key under the hive"); return false; }
     const LSTATUS r = RegDeleteTreeW(hive, path.c_str());
     if (r != ERROR_SUCCESS && r != ERROR_FILE_NOT_FOUND) return false;
     const LSTATUS r2 = RegDeleteKeyExW(hive, path.c_str(), KEY_WOW64_64KEY, 0);
@@ -93,6 +106,7 @@ bool removeKey(HKEY hive, const std::wstring& path) {
 }
 
 void removeKeyIfEmpty(HKEY hive, const std::wstring& path) {   // (DeleteRegKey /ifempty)
+    if (!underHive(path)) return;
     HKEY k = nullptr;
     if (RegOpenKeyExW(hive, path.c_str(), 0, KEY_READ | KEY_WOW64_64KEY, &k) != ERROR_SUCCESS) return;
     DWORD subs = 0, values = 0;
@@ -164,21 +178,25 @@ bool setup(const Where& w) {
     std::error_code ec;
     const fs::path shared = w.shared();
     fs::create_directories(shared, ec);
-    if (!w.test()) {   // (writable by the unelevated apps: BUILTIN\Users by SID, inherited, Modify)
+    if (!w.test())   // (writable by the unelevated apps: BUILTIN\Users by SID, inherited, Modify)
         if (runQuiet(L"icacls.exe \"" + shared.wstring() + L"\" /grant *S-1-5-32-545:(OI)(CI)M /T /Q") != 0) say("could not open the Shared folder to Users (icacls)");
-        // Explorer's "Convert with Lathe" cascade on any file
-        if (HKEY k = create(HKEY_LOCAL_MACHINE, kVerbKey)) {
-            ok &= setStr(k, L"MUIVerb", L"Convert with Lathe") && setStr(k, L"Icon", w.exe.wstring()) && setStr(k, L"ExtendedSubCommandsKey", L"Lathe.Convert");
+    // Explorer's "Convert with Lathe" cascade on any file (a test root's under its own key, so a check runs this path too)
+    {
+        bool verbs = true;
+        if (HKEY k = create(w.verbHive(), w.verbKey(kVerbKey))) {
+            verbs &= setStr(k, L"MUIVerb", L"Convert with Lathe") && setStr(k, L"Icon", w.exe.wstring()) && setStr(k, L"ExtendedSubCommandsKey", L"Lathe.Convert");
             RegCloseKey(k);
-        } else ok = false;
+        } else verbs = false;
         for (const Verb& v : kVerbs) {
-            const std::wstring base = std::wstring(kSubKey) + L"\\shell\\" + v.key;
-            HKEY k = create(HKEY_LOCAL_MACHINE, base), c = create(HKEY_LOCAL_MACHINE, base + L"\\command");
-            ok &= k && c && setStr(k, L"MUIVerb", v.label) && setStr(c, nullptr, L"\"" + w.exe.wstring() + L"\" --convert \"%1\" --format " + v.fmt);
+            const std::wstring base = w.verbKey(kSubKey) + L"\\shell\\" + v.key;
+            HKEY k = create(w.verbHive(), base), c = create(w.verbHive(), base + L"\\command");
+            verbs &= k && c && setStr(k, L"MUIVerb", v.label) && setStr(c, nullptr, L"\"" + w.exe.wstring() + L"\" --convert \"%1\" --format " + v.fmt);
             if (k) RegCloseKey(k);
             if (c) RegCloseKey(c);
         }
-        if (!ok) say("could not write Explorer's Convert with Lathe verbs (HKLM\\Software\\Classes)");
+        if (!verbs) { ok = false; say("could not write Explorer's Convert with Lathe verbs (Software\\Classes)"); }
+    }
+    if (!w.test()) {
         if (HKEY k = create(HKEY_LOCAL_MACHINE, kDirKey)) { ok &= setStr(k, nullptr, w.dir.wstring()); RegCloseKey(k); }
         else { ok = false; say("could not write HKLM\\Software\\vacantsystems\\Lathe"); }
     }
@@ -215,8 +233,11 @@ bool unsetup(const Where& w) {
     fs::remove(w.startMenu() / name, ec);
     removeIfEmpty(w.startMenu());
     fs::remove(w.desktop() / name, ec);
-    if (!w.test()) {
-        if (!removeKey(HKEY_LOCAL_MACHINE, kVerbKey) || !removeKey(HKEY_LOCAL_MACHINE, kSubKey)) { ok = false; say("could not remove Explorer's verbs"); }
+    if (!removeKey(w.verbHive(), w.verbKey(kVerbKey)) || !removeKey(w.verbHive(), w.verbKey(kSubKey))) { ok = false; say("could not remove Explorer's verbs"); }
+    if (w.test()) {
+        removeKey(HKEY_CURRENT_USER, kTestVerbs);
+        removeKeyIfEmpty(HKEY_CURRENT_USER, kTestVerbsParent);
+    } else {
         removeKey(HKEY_LOCAL_MACHINE, kDirKey);
         removeKeyIfEmpty(HKEY_LOCAL_MACHINE, kDirKeyParent);
     }
@@ -307,6 +328,15 @@ int uninstall(const Where& w, bool quiet, const std::wstring& params) {
 }
 
 }  // namespace
+
+bool setupRequested() {
+    int n = 0;
+    LPWSTR* a = CommandLineToArgvW(GetCommandLineW(), &n);
+    bool yes = false;
+    for (int i = 1; a && i < n; ++i) yes |= std::wcscmp(a[i], L"--setup") == 0 || std::wcscmp(a[i], L"--uninstall") == 0;
+    if (a) LocalFree(a);
+    return yes;
+}
 
 int setupCommand(const std::vector<std::string>& args) {
     bool setupArg = false, uninstallArg = false;

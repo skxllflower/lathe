@@ -8,6 +8,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-03
+
+- **Native Lathe: `--setup` / `--uninstall` run from main, not a static initializer**: in WAVdesk the same pattern ran setup before its string key globals were built, so it wrote onto the HKLM root and tried to delete HKLM itself; Lathe was safe only by luck. The registry helpers now refuse an empty or root key, and the one-copy hand-off stands aside for these runs. Explorer's Convert with Lathe verbs now go under the test key in a `--test-root` run too, so `native/tests/setup/check_setup.py` checks their paths and proves nothing outside the test root changes.
+
 ## 2026-11-02
 
 - **One version for all of Lathe**: the CLI read its own `project(VERSION)`, so a 0.1.9 bump of the app still printed `lathe 0.1.8`. Now `tauri.conf.json` is the only source: the CLI and the native GUI read it at configure time (`cmake/lathe_version.cmake`), `tools/bump-version.ps1 <x.y.z>` keeps the Tauri manifests in step, and the release fails when the CLI, the GUI's version resource, the manifests or the installer disagree.
