@@ -37,7 +37,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        c017f855e52def91de6adc1d16f671dc0aa84438   # feat/native-shell-mac (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
+    GIT_TAG        75cff8d0ce9f950aa5d2c7ec36609baadc51a824   # wavdesk main (the Mac shell merged in) (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
