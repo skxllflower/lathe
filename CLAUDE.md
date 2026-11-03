@@ -47,6 +47,9 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
 and its headless runs (`lathe-gui --skin vx --screenshot out.png`, `--steps file.json`: vacant-labs vpf/CLAUDE.md).
 
 ## Iron rules + lockstep invariants
+- **One version:** `gui/src-tauri/tauri.conf.json` `version`. The CLI (`project(VERSION)`) and the native GUI read it
+  through `cmake/lathe_version.cmake`; bump with `tools/bump-version.ps1 <x.y.z>` (also package.json, Cargo.toml,
+  Cargo.lock). `build-release-native.ps1` fails when any built piece says another version.
 - **The decode/convert contract with WAVdesk is sacred:** WAVdesk's Rust (`lathe_convert` in
   `external_tools.rs`, the video decode-server protocol) and C++ (`src/core/wavdesk_lathe.cpp`
   resolution + lossy round-trip bracket) depend on this CLI's surface. Never change flags or output

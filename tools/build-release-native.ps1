@@ -36,8 +36,15 @@ $coredist = Join-Path $stage 'coredist'
 $icon     = Join-Path $repo 'gui\src-tauri\icons\icon.ico'
 $script:LogPath = Join-Path $out 'last-release-build.log'
 
-# the version: tauri.conf.json's, the one source native/CMakeLists.txt also reads (the exe's VERSIONINFO, About)
+# the version: tauri.conf.json's, Lathe's one source (cmake/lathe_version.cmake: the CLI's --version, the GUI's
+# VERSIONINFO and About; here the installer and the manager's zip). Every built piece is checked against it below.
 $version = (Get-Content (Join-Path $repo 'gui\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json).version
+
+# a built piece that says another version fails the release (a bump that missed a place, a stale build tree)
+function Assert-Version([string]$Got, [string]$What) {
+    if ($Got -ne $version) { throw "version mismatch: $What says '$Got', tauri.conf.json says '$version'" }
+    Write-Host "  version ${version}: $What"
+}
 
 if ($Clean -and (Test-Path $out)) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
@@ -80,6 +87,8 @@ if ($dllCount -eq 0 -or $libavInfo -match 'not built in') {
 }
 Write-Host "  staged lathe.exe + $dllCount DLL(s) -> $coredist"
 Write-Host "  libav OK: $((($libavInfo -split "`r?`n")[0..1]) -join ' | ')"
+$cliVersion = ((& (Join-Path $coredist 'lathe.exe') --version | Out-String).Trim() -replace '^lathe\s+', '')
+Assert-Version $cliVersion 'lathe.exe --version'
 
 # ---- 2: the GUI ----
 Step 2 "the native GUI ($Configuration, pinned vpf + WAVdesk)"
@@ -91,6 +100,10 @@ $guiExe = Join-Path $guiBuild "bin\$Configuration\lathe-gui.exe"
 if (-not (Test-Path $guiExe)) { throw "GUI not found: $guiExe" }
 Copy-Item $guiExe $stage -Force
 Write-Host "  -> $(Join-Path $stage 'lathe-gui.exe')"
+Assert-Version ((Get-Item (Join-Path $stage 'lathe-gui.exe')).VersionInfo.ProductVersion -replace '\.0$', '') 'lathe-gui.exe ProductVersion'
+& (Join-Path $PSScriptRoot 'bump-version.ps1') -Check | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "version mismatch in the Tauri manifests: run tools\bump-version.ps1 -Check" }
+Write-Host "  version ${version}: package.json, Cargo.toml, Cargo.lock"
 
 # ---- 3: the installer ----
 Step 3 "makensis"
@@ -104,6 +117,7 @@ if (-not $Makensis) {
 if (-not $Makensis) { throw "makensis not found: install NSIS 3 (nsis.sourceforge.io) or pass -Makensis <path>." }
 $setup = Join-Path $out "Lathe_${version}_x64-setup.exe"
 Invoke-Native { & $Makensis /V2 "/DVERSION=$version" "/DSTAGE=$stage" "/DOUTFILE=$setup" "/DICON=$icon" (Join-Path $native 'installer\lathe.nsi') } "makensis"
+Assert-Version (Get-Item $setup).VersionInfo.ProductVersion 'the installer ProductVersion'
 
 # ---- 4: where WAVdesk's release looks for it ----
 Step 4 "copy for WAVdesk's companion offer"
@@ -129,7 +143,9 @@ Get-ChildItem $item -Recurse -Force | ForEach-Object { $_.LastWriteTimeUtc = $st
 (Get-Item $item).LastWriteTimeUtc = $stamp
 $zip = Join-Path $mgr "Lathe-$version-win-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
-Invoke-Native { & tar.exe -a -cf $zip -C $pack 'Lathe' } "tar (the manager's zip)"
+# (Windows' own bsdtar by path: from Git Bash a bare tar.exe is GNU tar, which writes no zip)
+$tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+Invoke-Native { & $tar -a -cf $zip -C $pack 'Lathe' } "tar (the manager's zip)"
 Remove-Item -Recurse -Force $pack
 Write-Host "  -> $zip"
 

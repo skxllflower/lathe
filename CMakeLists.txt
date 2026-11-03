@@ -5,7 +5,9 @@ cmake_minimum_required(VERSION 3.20)
 if (CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
   set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version" FORCE)
 endif()
-project(lathe LANGUAGES CXX VERSION 0.1.8)
+# the version: tauri.conf.json's, Lathe's one source (cmake/lathe_version.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/lathe_version.cmake)
+project(lathe LANGUAGES CXX VERSION ${LATHE_VERSION})
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -152,6 +154,6 @@ endif()
 # the Vacant Systems shared bin (see src/paths.cpp) and a next-to-exe copy
 # would permanently win the portable-override tier of the resolution order.
 
-# Single version source of truth: the CLI help/--version banners print
-# LATHE_VERSION, so bumping project(VERSION) is the whole C++ bump.
+# The CLI help/--version banners print LATHE_VERSION: project(VERSION), read from
+# tauri.conf.json (cmake/lathe_version.cmake), so the version there is the whole bump.
 target_compile_definitions(lathe PRIVATE LATHE_VERSION="${PROJECT_VERSION}")

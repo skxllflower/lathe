@@ -20,11 +20,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# the version: tauri.conf.json's, the one the release script and the installer also read (until gui/ retires)
-file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../gui/src-tauri/tauri.conf.json LATHE_CONF)
-string(REGEX MATCH "\"version\": *\"([0-9.]+)\"" _ "${LATHE_CONF}")
-set(LATHE_VERSION ${CMAKE_MATCH_1})
-string(REPLACE "." "," LATHE_VERSION_COMMAS "${LATHE_VERSION},0")
+# the version: tauri.conf.json's, Lathe's one source (cmake/lathe_version.cmake: the core's CLI reads it too)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/lathe_version.cmake)
 
 include(FetchContent)
 FetchContent_Declare(vacantlabs
