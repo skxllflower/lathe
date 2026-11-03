@@ -34,7 +34,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        700a742fadd7bce207747079cdad2cacd24e2c98   # feat/native-shell (the Latch hooks, Lathe parity, folder groups; 1-Bit; vacant-labs 030d8d34)
+    GIT_TAG        9904b24945616d0113b8148b5b7619932b1e3f84   # feat/native-shell (the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")

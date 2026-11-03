@@ -10,6 +10,7 @@ folded into the change they landed rather than given their own entry.
 
 ## 2026-11-02
 
+- **Native Lathe (VX): menus hover in green**: the hovered row of the VX look's menus (the look chooser, the dropdowns) lights in Afterglow's green. WAVdesk pin 9904b249; vacant-labs stays 030d8d34.
 - **Native Lathe on vacant-labs 030d8d34 and WAVdesk 700a742f**: both pins move together (WAVdesk's native shell pins that vacant-labs commit); the only vpf / Etch change since 11a77309 is Etch's own look label, now "1-Bit".
 - **Native Lathe: the Dev look is called 1-Bit** in the look chooser (WAVdesk pin a863ee80, feat/native-shell). Only the label: the skin id stays "dev", so a saved choice keeps working.
 - **Native Lathe: a dropped folder is one row**: "Drums/  2,000 files · 3.2 GB · aif, wav", folded past 20 files (click to open; its X removes the folder's files), with a summary line over the list (done / total and failures while converting) and a toggle that shows only the failed files. Only the visible rows are laid out, so 10,000 inputs stay as quick as a few. WAVdesk pin a36a2832 (464cc358).
