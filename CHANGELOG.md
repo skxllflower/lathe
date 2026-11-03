@@ -10,6 +10,7 @@ folded into the change they landed rather than given their own entry.
 
 ## 2026-11-02
 
+- **Native Lathe: the Dev look is called 1-Bit** in the look chooser (WAVdesk pin a863ee80, feat/native-shell). Only the label: the skin id stays "dev", so a saved choice keeps working.
 - **Native Lathe: a dropped folder is one row**: "Drums/  2,000 files · 3.2 GB · aif, wav", folded past 20 files (click to open; its X removes the folder's files), with a summary line over the list (done / total and failures while converting) and a toggle that shows only the failed files. Only the visible rows are laid out, so 10,000 inputs stay as quick as a few. WAVdesk pin a36a2832 (464cc358).
 - **Native Lathe: tooltips draw over everything**: the WAVdesk pin moves to 813b9a8a, where the shared window draws its tip in a child above the others and asks child widgets for theirs too (written for the Latch windows); the text field no longer covers a tip.
 - **Native Lathe: a convert's end is never held up by another one**: the WAVdesk pin moves to 4903c46f, the parity branch merged with WAVdesk's Latch hooks, which carries the shared launcher's fix that a child inherits only its own std handles. A child started at the same moment used to hold this one's output pipe open, so its finish waited on the other's exit.

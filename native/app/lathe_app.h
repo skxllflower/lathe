@@ -1,7 +1,7 @@
 // The standalone Lathe: WAVdesk's native Lathe window (lathe_window.h, shared, unchanged) as the whole of an app's
 // window instead of a popup over WAVdesk's main one. What it adds is what the Tauri ConvertApp's own frame had:
 //   the title strip as the window's frame (dragged to move it), Minimize beside the X, the look chooser (the skins:
-//   Dev look, VX, Focused, Zen Dark) and About (about_window.h)
+//   1-Bit, VX, Focused, Zen Dark; the 1-Bit skin id stays "dev") and About (about_window.h)
 //   Export to...: the move itself (tools.rs fs_move: a free name in the folder, rename else copy + delete), each row then
 //   told where its file landed (LatheWindow::exported)
 //   Escape: clears the input selection (escapeClears; in WAVdesk it closes the tool window, here it would quit the app)
