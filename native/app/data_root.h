@@ -8,7 +8,8 @@ std::string dataRoot();          // Lathe's data folder, '/' separated (settings
 void setWritable(bool on);       // false: settings.json is never written (headless runs)
 bool isWritable();
 
-// This app's own lathe CLI: <exe dir>/coredist/lathe (the installed layout on both platforms), then beside the exe;
+// This app's own lathe CLI: <exe dir>/coredist/lathe (the installed layout on both platforms), then beside the exe
+// (not on the Mac, where .../MacOS/lathe is this GUI, .../MacOS/Lathe);
 // in a dev run (the exe in a CMake build tree) the repo's own build (build/Release, then build/, build/Debug).
 // "" when none is there.
 std::string ownCore();

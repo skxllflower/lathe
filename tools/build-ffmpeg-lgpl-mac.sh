@@ -14,6 +14,11 @@ URL="https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz"
 # anything older (WAVdesk loads them on macOS 12+).
 MACOS_MIN="${MACOS_MIN:-12.0}"
 export MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN"
+# The slices to build: the build host's own by default (the Tauri release); "arm64 x86_64" for a universal prefix (the
+# native Lathe.app, tools/build-release-native-mac.sh). Each slice is configured and installed on its own (out of tree,
+# DESTDIR-staged so every .pc file names $PREFIX), then the dylibs are lipo'd together. x86_64's hand-written assembly
+# needs nasm: without it that slice builds --disable-x86asm (C only, slower) and says so.
+MAC_ARCHS="${MAC_ARCHS:-$(uname -m)}"
 
 mkdir -p "$WORK"
 if [ ! -f "$ARCHIVE" ]; then
@@ -51,18 +56,46 @@ CONFIGURE_FLAGS=(
   "--extra-ldflags=-mmacosx-version-min=$MACOS_MIN"
 )
 
+# (an in-tree configure from an earlier single-slice build would block the out-of-tree ones)
+(cd "$SOURCE" && make distclean >/dev/null 2>&1 || true)
 rm -rf "$PREFIX"
-mkdir -p "$PREFIX"
-(
-  cd "$SOURCE"
-  make distclean >/dev/null 2>&1 || true
-  ./configure "${CONFIGURE_FLAGS[@]}"
-  make -j"$(sysctl -n hw.ncpu)"
-  make install
-)
+FIRST=""
+SLICE_FLAGS=()
+for arch in $MAC_ARCHS; do
+  ARCH_FLAGS=("--arch=$arch" "--cc=clang -arch $arch")
+  if [ "$arch" != "$(uname -m)" ]; then ARCH_FLAGS+=(--enable-cross-compile --target-os=darwin); fi
+  if [ "$arch" = "x86_64" ] && ! command -v nasm >/dev/null 2>&1; then
+    echo "WARNING: nasm not found: the x86_64 slice builds without its assembly (brew install nasm, then rebuild)" >&2
+    ARCH_FLAGS+=(--disable-x86asm)
+  fi
+  BUILD_DIR="$WORK/build-$arch"
+  STAGE="$WORK/stage-$arch"
+  rm -rf "$BUILD_DIR" "$STAGE"
+  mkdir -p "$BUILD_DIR"
+  (
+    cd "$BUILD_DIR"
+    "$SOURCE/configure" "${CONFIGURE_FLAGS[@]}" "${ARCH_FLAGS[@]}"
+    make -j"$(sysctl -n hw.ncpu)"
+    make install DESTDIR="$STAGE"
+  )
+  if [ -z "$FIRST" ]; then
+    FIRST="$arch"
+    mkdir -p "$(dirname "$PREFIX")"
+    cp -R "$STAGE$PREFIX" "$PREFIX"
+  else
+    # every real dylib (not the version symlinks) made universal in place
+    for lib in "$PREFIX"/lib/*.dylib; do
+      [ -L "$lib" ] && continue
+      lipo -create "$lib" "$STAGE$PREFIX/lib/$(basename "$lib")" -output "$lib.universal"
+      mv -f "$lib.universal" "$lib"
+    done
+  fi
+  rm -rf "$STAGE"
+  SLICE_FLAGS+=("# $arch: ${ARCH_FLAGS[*]}")
+done
 
 cp -f "$ARCHIVE" "$PREFIX/ffmpeg-$VERSION-source.tar.xz"
-printf '%s\n' "${CONFIGURE_FLAGS[@]}" > "$PREFIX/lathe-ffmpeg-configure.txt"
+printf '%s\n' "${CONFIGURE_FLAGS[@]}" "${SLICE_FLAGS[@]}" > "$PREFIX/lathe-ffmpeg-configure.txt"
 cp -f "$SOURCE/COPYING.LGPLv2.1" "$PREFIX/"
 
 if grep -Rqs -- '--enable-gpl\|--enable-nonfree' "$PREFIX/lib/pkgconfig"; then
@@ -76,4 +109,8 @@ if [ "$BUILT_MIN" != "$MACOS_MIN" ]; then
   exit 1
 fi
 
-echo "LGPL FFmpeg $VERSION (macOS $MACOS_MIN+) installed at $PREFIX"
+for arch in $MAC_ARCHS; do
+  lipo "$PREFIX/lib/libavutil.dylib" -verify_arch "$arch" || { echo "ERROR: libavutil has no $arch slice." >&2; exit 1; }
+done
+
+echo "LGPL FFmpeg $VERSION ($MAC_ARCHS, macOS $MACOS_MIN+) installed at $PREFIX"

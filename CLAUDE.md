@@ -40,7 +40,14 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
 - Release (Windows): `& .\tools\build-release-native.ps1` -> `native/build-release/Lathe_<ver>_x64-setup.exe`
   (`native/installer/lathe.nsi`: the Tauri install folder, uninstall key and exe name), also copied to
   `gui/src-tauri/target/release/bundle/nsis/` where WAVdesk's release picks up companion installers.
-- Data: `%LOCALAPPDATA%\Vacant Systems\Lathe` (settings.json: skin; native_ui.json: the window's
+- macOS: `cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build` ->
+  `native/build/bin/Lathe.app`, the repo's `build/lathe` copied into `Contents/MacOS/coredist/` (a bundle is never a
+  dev run). Release: `tools/build-release-native-mac.sh` -> a universal, ad hoc signed (or `APPLE_SIGNING_IDENTITY`:
+  Developer ID + notarized) `native/build-release/stage/Lathe.app` and the manager's
+  `native/build-release/manager/Lathe-<ver>-mac.zip`. Its core links universal prefixes, `~/Dev/ffmpeg-lgpl-mac-universal`
+  and `~/Dev/libjpeg-turbo-mac-universal` (the two build scripts with `MAC_ARCHS="arm64 x86_64"`, made when missing;
+  without nasm their x86_64 slices have no assembly). `WAVDESK_SRC` / `VACANTLABS_SRC` build on a local checkout.
+- Data: `%LOCALAPPDATA%\Vacant Systems\Lathe` (macOS `~/Library/Application Support/Vacant Systems/Lathe`; settings.json: skin; native_ui.json: the window's
   settings and presets under the Tauri localStorage key names). Headless runs write nothing.
 
 **Checks (both):** `pnpm typecheck`; `cargo check` in `gui/src-tauri` (no Rust tests yet); the native GUI builds

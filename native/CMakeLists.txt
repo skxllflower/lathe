@@ -4,6 +4,9 @@
 #   cmake -S native -B native/build -A x64 [-DFETCHCONTENT_SOURCE_DIR_VACANTLABS=<vacant-labs checkout>]
 #                                           [-DFETCHCONTENT_SOURCE_DIR_WAVDESK=<wavdesk checkout>]
 #   cmake --build native/build --config Release     -> native/build/bin/Release/lathe-gui.exe
+#   macOS: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build
+#                                                    -> native/build/bin/Lathe.app (build/lathe, the core, copied in)
+#   a release: tools/build-release-native.ps1 (Windows), tools/build-release-native-mac.sh (macOS)
 #
 # The window itself is WAVdesk's native Lathe window (native/shell/lathe_window.*, on the shared ExtWindow, the skins, the
 # dialogs and the tool runner), compiled from a pinned WAVdesk commit rather than forked: the two apps show one window.
@@ -16,6 +19,9 @@ if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS (the core's floor)" FORCE)
 endif()
 project(lathe_native C CXX)
+if(APPLE)
+    enable_language(OBJCXX)   # (the shell's macOS side: os_shell_mac.mm)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -31,7 +37,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        9904b24945616d0113b8148b5b7619932b1e3f84   # feat/native-shell (the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
+    GIT_TAG        c017f855e52def91de6adc1d16f671dc0aa84438   # feat/native-shell-mac (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -69,6 +75,7 @@ endif()
 vpf_add_standalone_app(lathe_gui NAME ${LATHE_EXE_NAME} BUNDLE_ID com.vacantsystems.lathe VERSION ${LATHE_VERSION}
     SOURCES ${LATHE_APP_SOURCES} ${LATHE_SHARED_SOURCES}
     PLIST ${CMAKE_CURRENT_SOURCE_DIR}/app/Info.plist.in
+    ICON ${CMAKE_CURRENT_SOURCE_DIR}/../gui/src-tauri/icons/icon.icns
     WIN_RC ${CMAKE_CURRENT_BINARY_DIR}/lathe_gui.rc)
 target_include_directories(lathe_gui PRIVATE ${WD} ${CMAKE_CURRENT_SOURCE_DIR}/compat)
 target_link_libraries(lathe_gui PRIVATE vpf::app nlohmann_json::nlohmann_json)
@@ -86,5 +93,17 @@ if(WIN32)
     target_compile_definitions(lathe_gui PRIVATE UNICODE _UNICODE)
     target_link_libraries(lathe_gui PRIVATE shell32 ole32)
 elseif(APPLE)
-    target_link_libraries(lathe_gui PRIVATE "-framework Foundation" "-framework AppKit")
+    # the shell's macOS OS calls (context_menu.h's os::openPath and the rest: Finder, the window frames)
+    target_sources(lathe_gui PRIVATE ${WD}/os_shell_mac.mm)
+    set_source_files_properties(${WD}/os_shell_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+    target_link_libraries(lathe_gui PRIVATE "-framework Foundation" "-framework AppKit" "-framework CoreServices" "-framework IOKit")
+    # the lathe CLI into the bundle after every build (app/bundle_core.cmake: Contents/MacOS/coredist/lathe, re-signed);
+    # LATHE_CORE_BINARY is the core's own build (the repo's build/, as tools/build-release-native-mac.sh makes it; a
+    # release passes its staged copy, the libav dylibs beside it)
+    set(LATHE_CORE_BINARY ${CMAKE_CURRENT_SOURCE_DIR}/../build/lathe CACHE FILEPATH "The lathe CLI Lathe.app carries")
+    add_custom_target(lathe_bundle_core ALL
+        COMMAND ${CMAKE_COMMAND} -DCORE=${LATHE_CORE_BINARY} -DAPP=$<TARGET_BUNDLE_DIR:lathe_gui>
+                -DIDENTITY=${VPF_CODESIGN_IDENTITY} -P ${CMAKE_CURRENT_SOURCE_DIR}/app/bundle_core.cmake
+        COMMENT "Lathe.app: its lathe CLI" VERBATIM)
+    add_dependencies(lathe_bundle_core lathe_gui)
 endif()

@@ -187,6 +187,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     }
     lathe::importTauriSettings();   // (once: the Tauri app's format, destination and presets, before the window reads them)
 
+    // (macOS: the traffic lights hidden; the title strip draws its own Minimize and Close at the right, as the Tauri window did)
+    Editor::setSystemButtonsHidden(true);
     auto* ed = new Editor(host, lathe::LatheApp::kWidth, lathe::LatheApp::kHeight);
     ed->setResizable(lathe::LatheApp::kWidth, lathe::LatheApp::kHeight);   // (tauri.conf: resizable, never smaller than its first size)
     ed->setCustomFrame(Editor::customFrameSupported());   // (the title strip is the window's: decorations false)

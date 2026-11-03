@@ -1,0 +1,38 @@
+# Lathe.app's own lathe CLI (run by native/CMakeLists.txt's lathe_bundle_core target after each build, macOS): the core
+# copied to Contents/MacOS/coredist/lathe, where the Tauri bundle had it (ownCore() and the shared lookup look there; a
+# bundle is never a dev run, so it finds no other), with the libav dylibs beside it when there are any (a release's
+# staged core links them through @loader_path; a dev build's links its prefix in place), then the bundle re-signed
+# inside out: the dylibs, the core, then the app.
+#   -DCORE=<lathe CLI> -DAPP=<Lathe.app> [-DIDENTITY=<codesign identity, - = ad hoc, empty = none>]
+if(NOT EXISTS "${CORE}")
+    message(WARNING "no lathe CLI at ${CORE}: Lathe.app runs without its own core (build it: cmake --build build --target lathe)")
+    return()
+endif()
+set(dist "${APP}/Contents/MacOS/coredist")
+set(dest "${dist}/lathe")
+file(MAKE_DIRECTORY "${dist}")
+get_filename_component(core_dir "${CORE}" DIRECTORY)
+file(GLOB dylibs "${core_dir}/*.dylib")
+set(signed)
+foreach(lib ${dylibs})
+    get_filename_component(name "${lib}" NAME)
+    execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different "${lib}" "${dist}/${name}" RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "copying ${lib} into ${APP} failed")
+    endif()
+    list(APPEND signed "${dist}/${name}")
+endforeach()
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CORE}" "${dest}" RESULT_VARIABLE rc)
+if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "copying ${CORE} into ${APP} failed")
+endif()
+list(APPEND signed "${dest}" "${APP}")
+if(IDENTITY)
+    # (never --deep: each piece signed on its own, the bundle sealed last)
+    foreach(piece ${signed})
+        execute_process(COMMAND codesign --force --sign "${IDENTITY}" "${piece}" RESULT_VARIABLE rc)
+        if(NOT rc EQUAL 0)
+            message(FATAL_ERROR "signing ${piece} failed")
+        endif()
+    endforeach()
+endif()
