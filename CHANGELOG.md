@@ -11,6 +11,7 @@ folded into the change they landed rather than given their own entry.
 ## 2026-11-03
 
 - **Native Lathe on macOS**: `tools/build-release-native-mac.sh` builds a universal (arm64 + x86_64) `Lathe.app` with its own core and LGPL libav dylibs in `Contents/MacOS/coredist`, signed inside out, and Vacant Systems Manager's `Lathe-<version>-mac.zip`. The window's traffic lights are hidden (the title strip draws its own Minimize and Close), and the app never takes its own GUI for the core (the Mac's disk is case-insensitive: `MacOS/lathe` opens `MacOS/Lathe`). The LGPL FFmpeg and libjpeg-turbo build scripts take `MAC_ARCHS` for universal prefixes. WAVdesk pin c017f855.
+- **Native Lathe: `--setup` / `--uninstall` run from main, not a static initializer**: in WAVdesk the same pattern ran setup before its string key globals were built, so it wrote onto the HKLM root and tried to delete HKLM itself; Lathe was safe only by luck. The registry helpers now refuse an empty or root key, and the one-copy hand-off stands aside for these runs. Explorer's Convert with Lathe verbs now go under the test key in a `--test-root` run too, so `native/tests/setup/check_setup.py` checks their paths and proves nothing outside the test root changes.
 
 ## 2026-11-02
 

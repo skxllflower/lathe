@@ -87,18 +87,11 @@ LRESULT CALLBACK handoffProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-// (before main, before the one-copy check below) the manager's --setup / --uninstall (setup_cli.h): done here and exit,
-// no window, no hand-off to a running Lathe
-const int g_setup = [] {
-    const int code = lathe::setupCommand(ownArgs());
-    if (code < 0) return 0;
-    std::fflush(stdout);
-    std::fflush(stderr);
-    ExitProcess((UINT)code);
-}();
-
 // (before main) false: another Lathe has this launch's arguments, and this process exits
 const bool g_sole = [] {
+    // (the manager's --setup / --uninstall: no hand-off and no mutex, which --uninstall reads as "Lathe is running"; they
+    // run from latheDef)
+    if (lathe::setupRequested()) return true;
     // (vpf has not parsed the arguments yet: before main, the command line itself)
     for (const std::string& a : ownArgs()) if (a == "--steps" || a == "--screenshot" || a == "--dump-tree") return true;
     CreateMutexW(nullptr, TRUE, kMutex);
@@ -288,7 +281,18 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     return ed;
 }
 
+// vpf's main asks for the definition first, before it reads a flag or builds anything: the manager's --setup /
+// --uninstall (setup_cli.h) run there, after every static initializer (never from one: a file's globals may not be built
+// yet), with no window; the process exits with its code
 const vpf::PluginDef& latheDef() {
+#if defined(_WIN32)
+    if (lathe::setupRequested()) {
+        const int code = lathe::setupCommand(ownArgs());
+        std::fflush(stdout);
+        std::fflush(stderr);
+        std::_Exit(code < 0 ? 2 : code);
+    }
+#endif
     static vpf::PluginDef d = [] {
         vpf::PluginDef p;
         p.info.id = "com.vacantsystems.lathe";

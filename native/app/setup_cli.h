@@ -11,8 +11,10 @@
 //                                                                  the folder once this process has gone
 //
 // --test-root: nothing real touched (the entry under HKCU\Software\Vacant Systems\Manager Test\Apps\Lathe, the
-// shortcuts and ProgramData under <dir>, no verbs, no HKLM, no ie4uinit). Exit 0 done, 1 failed (why on stderr), 2 an
-// argument it does not know. Run from main.cpp before anything else (before the window and the one-copy hand-off).
+// shortcuts and ProgramData under <dir>, the verbs under HKCU\Software\Vacant Systems\Manager Test\Verbs\Lathe at the
+// same paths, no HKLM, no ie4uinit; native/tests/setup/check_setup.py: nothing outside the test root changes). Exit 0
+// done, 1 failed (why on stderr), 2 an argument it does not know. Run from main (main.cpp latheDef, vpf's first call into
+// the app), never from a static initializer: before the window, the one-copy hand-off stands aside for it.
 // Keep it in step with native/installer/lathe.nsi: the same keys, values and verbs.
 #pragma once
 #include <string>
@@ -20,7 +22,10 @@
 
 namespace lathe {
 
-// -1: not a --setup / --uninstall launch (the app runs); otherwise the exit code
+// --setup or --uninstall on the command line (the command line only, no globals: safe from a static initializer,
+// which uses it to stand aside: the one-copy hand-off)
+bool setupRequested();
+// -1: not a --setup / --uninstall launch (the app runs); otherwise the exit code. From main only
 int setupCommand(const std::vector<std::string>& args);
 
 }  // namespace lathe
