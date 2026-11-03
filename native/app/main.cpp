@@ -16,6 +16,7 @@
 #include "lathe_app.h"
 #include "look.h"
 #include "settings_store.h"
+#include "setup_cli.h"
 #include "skin.h"
 #include "ui_state.h"
 #include "window_place.h"
@@ -85,6 +86,16 @@ LRESULT CALLBACK handoffProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return DefWindowProcW(h, msg, wp, lp);
 }
+
+// (before main, before the one-copy check below) the manager's --setup / --uninstall (setup_cli.h): done here and exit,
+// no window, no hand-off to a running Lathe
+const int g_setup = [] {
+    const int code = lathe::setupCommand(ownArgs());
+    if (code < 0) return 0;
+    std::fflush(stdout);
+    std::fflush(stderr);
+    ExitProcess((UINT)code);
+}();
 
 // (before main) false: another Lathe has this launch's arguments, and this process exits
 const bool g_sole = [] {

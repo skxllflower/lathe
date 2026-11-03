@@ -2,6 +2,7 @@
 #include "data_root.h"
 #include "dev_run.h"
 #include "external_tools.h"
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -41,24 +42,21 @@ std::string ownCore() {
 void registerSelf(const std::string& core) {
     if (core.empty() || !isWritable()) return;
     const std::string shared = wdn::vendorSharedDir();
-    if (shared.empty()) return;
-    const fs::path p = fs::u8path(shared + "/registry.json");
-    std::error_code ec;
-    fs::create_directories(p.parent_path(), ec);
+    if (!shared.empty()) registerSelfIn(shared, core);
+}
+
+namespace {
+nlohmann::json readRegistry(const fs::path& p) {
     nlohmann::json root;
-    {
-        std::ifstream in(p, std::ios::binary);
-        if (in) { std::ostringstream ss; ss << in.rdbuf(); root = nlohmann::json::parse(ss.str(), nullptr, false); }
-    }
-    if (!root.is_object()) root = nlohmann::json::object();
-#if defined(_WIN32)
-    std::string native = core;
-    for (char& c : native) if (c == '/') c = '\\';   // (the Tauri app wrote the OS's own separators)
-#else
-    const std::string& native = core;
-#endif
-    root["lathe"] = {{"path", native}, {"version", LATHE_VERSION}};
-    const fs::path tmp = fs::u8path(shared + "/registry.json.tmp");
+    std::ifstream in(p, std::ios::binary);
+    if (in) { std::ostringstream ss; ss << in.rdbuf(); root = nlohmann::json::parse(ss.str(), nullptr, false); }
+    return root.is_object() ? root : nlohmann::json::object();
+}
+
+// written to a temp file and renamed over (a reader never sees half a file)
+void writeRegistry(const std::string& shared, const nlohmann::json& root) {
+    const fs::path p = fs::u8path(shared + "/registry.json"), tmp = fs::u8path(shared + "/registry.json.tmp");
+    std::error_code ec;
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) return;
@@ -67,6 +65,41 @@ void registerSelf(const std::string& core) {
     }
     fs::rename(tmp, p, ec);
     if (ec) fs::remove(tmp, ec);
+}
+
+std::string nativeSeparators(std::string s) {
+#if defined(_WIN32)
+    for (char& c : s) if (c == '/') c = '\\';   // (the Tauri app wrote the OS's own separators)
+#endif
+    return s;
+}
+
+std::string folded(std::string s) {   // (a path compared as Windows does: case and separators aside)
+    for (char& c : s) { if (c == '\\') c = '/'; c = (char)std::tolower((unsigned char)c); }
+    return s;
+}
+}  // namespace
+
+void registerSelfIn(const std::string& shared, const std::string& core) {
+    if (shared.empty() || core.empty()) return;
+    std::error_code ec;
+    fs::create_directories(fs::u8path(shared), ec);
+    nlohmann::json root = readRegistry(fs::u8path(shared + "/registry.json"));
+    root["lathe"] = {{"path", nativeSeparators(core)}, {"version", LATHE_VERSION}};
+    writeRegistry(shared, root);
+}
+
+void unregisterSelfIn(const std::string& shared, const std::string& core) {
+    if (shared.empty() || core.empty()) return;
+    const fs::path p = fs::u8path(shared + "/registry.json");
+    std::error_code ec;
+    if (!fs::exists(p, ec)) return;
+    nlohmann::json root = readRegistry(p);
+    if (!root.contains("lathe") || !root["lathe"].is_object()) return;
+    const std::string was = root["lathe"].value("path", std::string());
+    if (folded(was) != folded(core)) return;   // (another install's: left alone)
+    root.erase("lathe");
+    writeRegistry(shared, root);
 }
 
 }  // namespace lathe

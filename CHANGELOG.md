@@ -10,6 +10,7 @@ folded into the change they landed rather than given their own entry.
 
 ## 2026-11-02
 
+- **Native Lathe sets itself up for Vacant Systems Manager**: `lathe-gui --setup` does what the installer's Install section does (Explorer's Convert with Lathe verbs, the shortcuts, HKLM vacantsystems\Lathe, Shared's registry.json entry, the uninstall entry "Lathe" with `UninstallString "<exe>" --uninstall`), silently and safely twice; `--uninstall --quiet --keep-files` undoes it for the manager, and `--uninstall [--quiet]` is the installer's uninstall in the app (elevates, asks to quit Lathe and about the settings, then removes its folder after it exits). `--test-root <dir>` keeps every write under a test folder and HKCU. Both run before the window and the one-copy hand-off; exit 0 / 1 / 2. The NSIS installer stays a release path, with the same keys and values.
 - **Native Lathe (VX): menus hover in green**: the hovered row of the VX look's menus (the look chooser, the dropdowns) lights in Afterglow's green. WAVdesk pin 9904b249; vacant-labs stays 030d8d34.
 - **Native Lathe on vacant-labs 030d8d34 and WAVdesk 700a742f**: both pins move together (WAVdesk's native shell pins that vacant-labs commit); the only vpf / Etch change since 11a77309 is Etch's own look label, now "1-Bit".
 - **Native Lathe: the Dev look is called 1-Bit** in the look chooser (WAVdesk pin a863ee80, feat/native-shell). Only the label: the skin id stays "dev", so a saved choice keeps working.
