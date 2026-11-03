@@ -29,12 +29,12 @@ string(REPLACE "." "," LATHE_VERSION_COMMAS "${LATHE_VERSION},0")
 include(FetchContent)
 FetchContent_Declare(vacantlabs
     GIT_REPOSITORY https://github.com/skxllflower/vacant-labs.git
-    GIT_TAG        11a77309c670284aab3a6b3ec422dd7e966f575d   # (WAVdesk native's own pin: the shared window was written on it)
+    GIT_TAG        030d8d345cddb9851be7bed2084d5503e780c523   # (WAVdesk native's own pin: the shared window was written on it)
     GIT_SUBMODULES vpf/third_party/clap vpf/third_party/vst3/pluginterfaces
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        a863ee80ddff1fb74d154970fcc33ad6cc45f129   # feat/native-shell (the Latch hooks, Lathe parity, folder groups; the Dev look named 1-Bit)
+    GIT_TAG        700a742fadd7bce207747079cdad2cacd24e2c98   # feat/native-shell (the Latch hooks, Lathe parity, folder groups; 1-Bit; vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
