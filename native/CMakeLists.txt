@@ -32,12 +32,12 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/lathe_version.cmake)
 include(FetchContent)
 FetchContent_Declare(vacantlabs
     GIT_REPOSITORY https://github.com/skxllflower/vacant-labs.git
-    GIT_TAG        030d8d345cddb9851be7bed2084d5503e780c523   # (WAVdesk native's own pin: the shared window was written on it)
+    GIT_TAG        7895084e537f3892fb04ae0f50e395bb7eddda35   # vacant-labs main (the Etch bug sweep, the vpf menu fix, the manager's Mac port); (WAVdesk native's own pin: the shared window was written on it)
     GIT_SUBMODULES vpf/third_party/clap vpf/third_party/vst3/pluginterfaces
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        75cff8d0ce9f950aa5d2c7ec36609baadc51a824   # wavdesk main (the Mac shell merged in) (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
+    GIT_TAG        cf91e5168a830647e893503cb41769cd428bf371   # wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
