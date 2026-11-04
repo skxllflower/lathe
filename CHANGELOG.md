@@ -8,8 +8,16 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-04
+
+- **Native Lathe: built on WAVdesk 9463b9e9** (ExtWindow::macButtons for the Mac's buttons; the rules in a scrolling column cut to it, which drew over the title strip when scrolled).
+- **Native Lathe: a small Settings window holds the look** (SETTINGS on the title strip, beside About), as Latch's does; the look button left the strip.
+
 ## 2026-11-03
 
+- **Native Lathe on macOS: close and minimize at the strip's left in the Mac's order** (WAVdesk's ExtWindow::macButtons), greyed while the window is in the background, the title after them; they were at the right, as on Windows.
+- **Native Lathe: opens at 600 x 340, WAVdesk's Latch window's size**, which is also its smallest (the owner's call: Latch and Lathe the same size).
+- **Native Lathe: the 1-Bit title strip draws Lathe's mark in the strip's ink**, its light shapes on whole pixels with the dark tile left out, in place of the black and white picture; the other looks keep the picture.
 - **Native Lathe: built on vacant-labs main 7895084e and WAVdesk cf91e516**: the shared windows get the Etch bug sweep (Unicode paths, UTF-8 text) and long VX menus scroll to the row the keys land on; the first catalog release ships on it.
 - **Native Lathe on macOS**: `tools/build-release-native-mac.sh` builds a universal (arm64 + x86_64) `Lathe.app` with its own core and LGPL libav dylibs in `Contents/MacOS/coredist`, signed inside out, and Vacant Systems Manager's `Lathe-<version>-mac.zip`. The window's traffic lights are hidden (the title strip draws its own Minimize and Close), and the app never takes its own GUI for the core (the Mac's disk is case-insensitive: `MacOS/lathe` opens `MacOS/Lathe`). The LGPL FFmpeg and libjpeg-turbo build scripts take `MAC_ARCHS` for universal prefixes. WAVdesk pin c017f855.
 - **Native Lathe: `--setup` / `--uninstall` run from main, not a static initializer**: in WAVdesk the same pattern ran setup before its string key globals were built, so it wrote onto the HKLM root and tried to delete HKLM itself; Lathe was safe only by luck. The registry helpers now refuse an empty or root key, and the one-copy hand-off stands aside for these runs. Explorer's Convert with Lathe verbs now go under the test key in a `--test-root` run too, so `native/tests/setup/check_setup.py` checks their paths and proves nothing outside the test root changes.

@@ -9,6 +9,7 @@
 // window (which comes to the front and takes the files) and exits before anything opens. The lathe CLI does every
 // conversion (lathe_window.h: `lathe convert` a file, three at once); this process never converts anything itself.
 #include "about_window.h"
+#include "settings_window.h"
 #include "data_root.h"
 #include "dev_run.h"
 #include "dialog_window.h"
@@ -180,7 +181,8 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     }
     lathe::importTauriSettings();   // (once: the Tauri app's format, destination and presets, before the window reads them)
 
-    // (macOS: the traffic lights hidden; the title strip draws its own Minimize and Close at the right, as the Tauri window did)
+    // (macOS: the traffic lights hidden; the title strip draws its own Close and Minimize at its left in the Mac's order,
+    // ExtWindow::macButtons, as WAVdesk's title bar; elsewhere at the right, as the Tauri window did)
     Editor::setSystemButtonsHidden(true);
     auto* ed = new Editor(host, lathe::LatheApp::kWidth, lathe::LatheApp::kHeight);
     ed->setResizable(lathe::LatheApp::kWidth, lathe::LatheApp::kHeight);   // (tauri.conf: resizable, never smaller than its first size)
@@ -198,6 +200,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     app->bounds = {0, 0, lathe::LatheApp::kWidth, lathe::LatheApp::kHeight};
     app->onBoundsChanged();
     ed->onResize = [app](int w, int h) { app->bounds = {0, 0, w, h}; app->onBoundsChanged(); };
+    ed->onWindowStateChanged = [app] { app->repaint(); };   // (macOS: the strip's buttons grey in a background window)
     ed->setFocus(app);
 
     // the close (the X, Alt+F4, Cmd+Q): asked first while converting, as the Tauri onCloseRequested did
@@ -230,13 +233,35 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
         ed->setFocus(raw);
     };
 
+    // Settings: one window, raised when open (the look's row: SettingsWindow)
+    auto settings = std::make_shared<lathe::SettingsWindow*>(nullptr);
+    app->onSettings = [ed, app, settings] {
+        if (*settings && wdn::liveWindow(*ed, *settings)) { ed->raisePopup(*settings); return; }
+        auto w = std::make_unique<lathe::SettingsWindow>();
+        lathe::SettingsWindow* raw = w.get();
+        *settings = raw;
+        raw->skinName = app->skinName;
+        raw->onSkin = [app](const std::string& name) { if (app->onSkin) app->onSkin(name); };
+        raw->bounds = {(lathe::LatheApp::kWidth - lathe::SettingsWindow::kWidth) / 2, 0, lathe::SettingsWindow::kWidth, lathe::SettingsWindow::kHeight};
+        raw->onBoundsChanged();
+        raw->onClose = [ed, raw, settings] { if (wdn::liveWindow(*ed, raw)) ed->closePopup(raw); *settings = nullptr; };
+        vpf::gui::PopupOptions o;
+        o.window = true;
+        o.detached = true;
+        o.activates = true;
+        o.corners = vpf::gui::CornerStyle::Round;
+        wdn::openWindow(*ed, std::move(w), o);
+        ed->setFocus(raw);
+    };
+
     // another look: applied at once, kept in settings.json
-    app->onSkin = [app, about, ed](const std::string& name) {
+    app->onSkin = [app, about, settings, ed](const std::string& name) {
         applySkin(name);
         wdn::settings::set("skin", name);
         app->skinName = name;
         app->onBoundsChanged();
         if (*about && wdn::liveWindow(*ed, *about)) (*about)->onBoundsChanged();
+        if (*settings && wdn::liveWindow(*ed, *settings)) { (*settings)->skinName = name; (*settings)->onBoundsChanged(); }
         ed->requestRepaint();
     };
 

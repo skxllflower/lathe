@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <utility>
 
 extern const vpf::EmbeddedFile kLatheIcon[];
 extern const size_t kLatheIcon_count;
@@ -55,6 +56,25 @@ bool drawAppIcon(const vpf::gui::Paint& p, int cx, int cy, int px) {
     static std::map<int, vpf::gui::Bitmap> cache;
     auto it = cache.find(n);
     if (it == cache.end()) it = cache.emplace(n, scaled(n)).first;
+    if (!it->second.valid()) return false;
+    const vpf::gui::Rect d = p.dev({cx - px / 2, cy - px / 2, px, px});
+    p.canvas.drawBitmap(it->second, d.x, d.y);
+    return true;
+}
+
+bool drawAppIconInk(const vpf::gui::Paint& p, int cx, int cy, int px, vpf::gui::Color ink) {
+    const int n = std::max(1, (int)std::lround(px * p.scale));
+    const uint32_t argb = (uint32_t)ink.a << 24 | (uint32_t)ink.r << 16 | (uint32_t)ink.g << 8 | ink.b;
+    static std::map<std::pair<int, uint32_t>, vpf::gui::Bitmap> cache;
+    auto it = cache.find({n, argb});
+    if (it == cache.end()) {
+        vpf::gui::Bitmap m = scaled(n);
+        for (uint32_t& q : m.px) {   // (a pixel is the mark's where the picture is opaque and light: half way, no blend)
+            const int luma = (int)(((q >> 16) & 255) * 299 + ((q >> 8) & 255) * 587 + (q & 255) * 114) / 1000;
+            q = (q >> 24) >= 128 && luma >= 128 ? argb : 0;
+        }
+        it = cache.emplace(std::make_pair(n, argb), std::move(m)).first;
+    }
     if (!it->second.valid()) return false;
     const vpf::gui::Rect d = p.dev({cx - px / 2, cy - px / 2, px, px});
     p.canvas.drawBitmap(it->second, d.x, d.y);

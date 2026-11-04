@@ -37,7 +37,7 @@ FetchContent_Declare(vacantlabs
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        cf91e5168a830647e893503cb41769cd428bf371   # wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
+    GIT_TAG        9463b9e9bc48600c2cdfbb19829c92d2210d5895   # wavdesk main (ExtWindow::macButtons, the scrolled rules cut to their column); wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
@@ -65,7 +65,7 @@ set(LATHE_SHARED_SOURCES
     ${WD}/dialog_window.cpp ${WD}/popup_motion.cpp ${WD}/window_place.cpp ${WD}/window_fit.cpp
     ${WD}/ui_state.cpp ${WD}/settings_store.cpp ${WD}/core_process.cpp ${WD}/dev_run.cpp ${WD}/drag_chip.cpp
     ${WD}/menus.cpp ${WD}/context_menu.cpp)
-set(LATHE_APP_SOURCES app/main.cpp app/lathe_app.cpp app/about_window.cpp app/host_stubs.cpp app/self_register.cpp app/tauri_import.cpp app/app_icon.cpp app/setup_cli.cpp)
+set(LATHE_APP_SOURCES app/main.cpp app/lathe_app.cpp app/about_window.cpp app/settings_window.cpp app/host_stubs.cpp app/self_register.cpp app/tauri_import.cpp app/app_icon.cpp app/setup_cli.cpp)
 
 if(APPLE)
     set(LATHE_EXE_NAME Lathe)        # (Lathe.app, as the Tauri bundle was named)

@@ -17,7 +17,10 @@ namespace lathe {
 class LatheApp : public wdn::LatheWindow {
 public:
     LatheApp();
-    std::function<void()> onAbout;
+    // the window's first size and its minimum: WAVdesk's Latch window's (LatchWindow::kWidth / kHeight; the owner,
+    // 2026-11-03: Latch and Lathe the same size), not LatheWindow's 660 x 420
+    static constexpr int kWidth = 600, kHeight = 340;
+    std::function<void()> onAbout, onSettings;
     std::function<void(const std::string& skin)> onSkin;   // (a look picked: the app applies it and keeps it)
     std::string skinName = "dev";
 

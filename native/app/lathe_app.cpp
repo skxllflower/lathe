@@ -19,10 +19,16 @@ using wdn::skin;
 LatheApp::LatheApp() {
     name = "lathe-app";
     ownTips = true;
+#if defined(__APPLE__)
+    macButtons = true;   // (the Mac's close and minimize at the strip's left: ExtWindow::macButtons)
+#endif
     escapeClears = true;
 }
 
-bool LatheApp::drawTitleIcon(const Paint& p, int cx, int cy, int px) const { return drawAppIcon(p, cx, cy, px); }
+bool LatheApp::drawTitleIcon(const Paint& p, int cx, int cy, int px) const {
+    if (skinName == "dev") return drawAppIconInk(p, cx, cy, px, skin().style("tool.titlebar").ink);   // (1-Bit: the mark in the strip's ink)
+    return drawAppIcon(p, cx, cy, px);
+}
 
 void LatheApp::exportMove(const std::vector<std::string>& paths, const std::string& dir) {
     std::shared_ptr<vpf::gui::UiQueue> q = editor() ? editor()->uiQueue() : nullptr;
@@ -43,12 +49,12 @@ bool LatheApp::onMouseDown(const vpf::gui::MouseEvent& e) {
     return LatheWindow::onMouseDown(e);
 }
 
-// right to left, left of the X: Minimize, the look, About (the Tauri status bar's info button, here beside the look)
+// right to left, left of the X (macOS: from the strip's right end): Minimize (not on macOS: ExtWindow's, at the left), Settings (the look is there), About (the Tauri status bar's info button, here beside the look)
 void LatheApp::titleExtras(std::vector<El>& /*out*/, int& right) {
     const Rect all{0, 0, bounds.w, bounds.h};
     const Style& t = skin().style("tool.titlebar");
     const int h = kTitle;
-    {
+    if (!macButtons) {   // (macOS: ExtWindow draws it at the left, after the close)
         const Rect r = wdn::look::stripButton({right - 28, 0, 28, h}, bounds.w, 1, h);
         right = r.x;
         add(r, all, "app:minimize", true, [t](const Paint& p, const Rect& rr, bool hot) {
@@ -68,21 +74,14 @@ void LatheApp::titleExtras(std::vector<El>& /*out*/, int& right) {
             wdn::look::text(p, rr.x + 7, wdn::look::baselineIn(p, rr.y, rr.h, true), text, hot ? t.ink : t.soft);
         });
     };
-    std::string lookLabel = skinName;
-    for (const auto& c : wdn::skinChoices()) if (c.first == skinName) lookLabel = c.second;
-    textButton("app:skin", upper(lookLabel));
+    textButton("app:settings", "SETTINGS");   // (the look is chosen there: SettingsWindow)
     textButton("app:about", "ABOUT");
 }
 
 void LatheApp::act(const std::string& id, const vpf::gui::MouseEvent& e) {
     if (id == "app:minimize") { if (editor()) editor()->minimizeWindow(); return; }
     if (id == "app:about") { if (onAbout) onAbout(); return; }
-    if (id == "app:skin") {
-        std::vector<Opt> opts;
-        for (const auto& c : wdn::skinChoices()) opts.push_back({c.first, c.second});
-        openSelectList(id, opts, skinName, [this](const std::string& v) { if (v != skinName && onSkin) onSkin(v); });
-        return;
-    }
+    if (id == "app:settings") { if (onSettings) onSettings(); return; }
     LatheWindow::act(id, e);
 }
 
