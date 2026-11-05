@@ -21,6 +21,7 @@
 #include "skin.h"
 #include "ui_state.h"
 #include "window_place.h"
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <thread>
@@ -160,6 +161,17 @@ void applySkin(const std::string& name) {
     wdn::look::setTextScale(1.0f);
 }
 
+// the text size as WAVdesk's (MainWindow::applyTextSize, its default 110 %): a look in the system font (Focused, Zen
+// Dark) zooms the whole window, so its 8 and 9 px words read as they do in WAVdesk; the pixel-font looks stay at 1
+void applyTextSize(Editor* ed) {
+    const double ts = std::clamp(wdn::settings::number("text_size", 1.10), 0.88, 1.60);
+    const double z = wdn::skin().font.system ? ts : 1.0;
+    ed->setBodyScales({z, 1.5 * z, 2 * z, 3 * z});
+    ed->setZoom(z);
+    if (!headless()) ed->refitToHost();
+    wdn::look::setLayoutZoom(z);
+}
+
 Editor* createEditor(vpf::gui::EditorHost& host) {
     wdn::dev::dropBinaryOverrides();   // (a packaged run: LATHE_EXE and the rest never reach the children)
     const bool quiet = headless();
@@ -194,6 +206,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     std::string skinName = vpf::standaloneArgValue("--skin");
     if (skinName.empty()) skinName = wdn::settings::text("skin", "dev");
     applySkin(skinName);
+    applyTextSize(ed);
 
     auto* app = ed->root().make<lathe::LatheApp>();
     app->skinName = skinName;
@@ -257,6 +270,7 @@ Editor* createEditor(vpf::gui::EditorHost& host) {
     // another look: applied at once, kept in settings.json
     app->onSkin = [app, about, settings, ed](const std::string& name) {
         applySkin(name);
+        applyTextSize(ed);
         wdn::settings::set("skin", name);
         app->skinName = name;
         app->onBoundsChanged();
