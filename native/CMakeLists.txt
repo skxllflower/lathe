@@ -32,12 +32,12 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/lathe_version.cmake)
 include(FetchContent)
 FetchContent_Declare(vacantlabs
     GIT_REPOSITORY https://github.com/skxllflower/vacant-labs.git
-    GIT_TAG        a2990c993cf94f339ee139adb56ae69f4698f519   # vacant-labs main (the 0.1.1 release: the drag-out race, the plugin host helper); vacant-labs main (the Etch bug sweep, the vpf menu fix, the manager's Mac port); (WAVdesk native's own pin: the shared window was written on it)
+    GIT_TAG        af95bf9913bb4a8281e15e0b54dc4284e9d1362c   # vacant-labs main (Etch 0.1.2, the manager 0.3.2: the 2026-11-05 round); vacant-labs main (the 0.1.1 release: the drag-out race, the plugin host helper); vacant-labs main (the Etch bug sweep, the vpf menu fix, the manager's Mac port); (WAVdesk native's own pin: the shared window was written on it)
     GIT_SUBMODULES vpf/third_party/clap vpf/third_party/vst3/pluginterfaces
 )
 FetchContent_Declare(wavdesk
     GIT_REPOSITORY https://github.com/skxllflower/wavdesk.git
-    GIT_TAG        f4de354e7083e3f8c6ca9cd5ccc4711770f8b79a   # wavdesk main (0.3.1, its vacant-labs pin a2990c99); wavdesk main (ExtWindow::macButtons, the scrolled rules cut to their column); wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
+    GIT_TAG        b63fbc73946c4bae4502b2f2f335e5e270c498be   # wavdesk main (0.3.2: the Latch chop audit fixes, the tree paste, its vacant-labs pin af95bf99); wavdesk main (0.3.1, its vacant-labs pin a2990c99); wavdesk main (ExtWindow::macButtons, the scrolled rules cut to their column); wavdesk main (its vacant-labs pin 7895084e); wavdesk main (the Mac shell merged in) (macOS: a standalone bundle's own coredist core, never the GUI itself), on feat/native-shell (--setup's verbs under HKCU, not the HKLM root; the Manager --setup / --uninstall; the Latch hooks, Lathe parity, folder groups; 1-Bit; VX menu hover; vacant-labs 030d8d34)
     GIT_SUBMODULES ""
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
