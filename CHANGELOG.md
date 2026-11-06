@@ -8,6 +8,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-05
+
+- **Native Lathe: About and Settings are icon buttons** (an (i) and a gear), and in VX Minimize sits beside Close instead of 11 px off it, as Latch's (its fix/owner-batch-0.1.10). Focused (and Zen Dark) zoom the window to WAVdesk's default text size (110 %): their 8 and 9 px words were too small to read.
+
 ## 2026-11-04
 
 - **Version 0.1.9.** The Mac's buttons at the strip's left, 600 x 340, a Settings window for the look, the 1-Bit mark, the scrolled divider fixed (WAVdesk 9463b9e9).
