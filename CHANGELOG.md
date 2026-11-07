@@ -8,6 +8,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-06
+
+- Version 0.1.11: built on vacant-labs main b6c228b2 (Etch 0.1.3; VX Native's middle dot and en dash) and WAVdesk main 1bb3f191 (0.3.3: the Latch chop audit). No Lathe changes of its own: the suite releases together.
+
 ## 2026-11-05
 
 - Version 0.1.10: the fixes below; built on vacant-labs main af95bf99 and WAVdesk main b63fbc73 (its Latch chop fixes and button widths).
