@@ -4,7 +4,7 @@ Standalone media converter: ffmpeg/libav wrapper (the `lathe` CLI, `src/`) + Tau
 (React/Vite `gui/src`, Rust host `gui/src-tauri`), being replaced by a native vpf GUI (`native/`,
 branch `feat/native-vpf`, Windows first; see "Native GUI" below). Fork-and-owned from WAVdesk scaffolding; WAVdesk
 also drives the lathe CLI directly (Convert flow, lossy round-trips, video decode-server).
-Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.8. Ships on Windows (NSIS) and
+Owner: skxllflower. Default branch: `master` (NOT main). Version 0.1.8. Ships on Windows (a Vacant Systems Manager zip) and
 macOS (Developer ID signed + notarized DMG). Day-to-day development happens on the Mac.
 
 ## Build / run
@@ -37,9 +37,9 @@ macOS (Developer ID signed + notarized DMG). Day-to-day development happens on t
   then `cmake --build native/build --config Release` -> `native/build/bin/Release/lathe-gui.exe`.
   A dev run (exe in a build tree) uses the repo's `build/Release/lathe.exe` via LATHE_EXE and does not
   self-register; an installed run uses `<exe>/coredist/lathe.exe` and registers it in registry.json.
-- Release (Windows): `& .\tools\build-release-native.ps1` -> `native/build-release/Lathe_<ver>_x64-setup.exe`
-  (`native/installer/lathe.nsi`: the Tauri install folder, uninstall key and exe name), also copied to
-  `gui/src-tauri/target/release/bundle/nsis/` where WAVdesk's release picks up companion installers.
+- Release (Windows): `& .\tools\build-release-native.ps1` -> the manager's
+  `native/build-release/manager/Lathe-<ver>-win-x64.zip` (`lathe-gui --setup` does the rest). No standalone installer
+  since 2026-11-20: the manager installs it (also as WAVdesk's companion).
 - macOS: `cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build` ->
   `native/build/bin/Lathe.app`, the repo's `build/lathe` copied into `Contents/MacOS/coredist/` (a bundle is never a
   dev run). Release: `tools/build-release-native-mac.sh` -> a universal, ad hoc signed (or `APPLE_SIGNING_IDENTITY`:

@@ -1,5 +1,5 @@
-# build-release-native.ps1 - one command to produce the native Lathe's Windows installer (the vpf GUI in native/,
-# replacing the Tauri one that tools/build-release.ps1 bundles).
+# build-release-native.ps1 - one command to produce the native Lathe's Windows release: the zip Vacant Systems
+# Manager installs. There is no standalone installer since 2026-11-20: the manager installs, updates and removes it.
 #
 #   & .\tools\build-release-native.ps1              # full release build
 #   & .\tools\build-release-native.ps1 -SkipCpp     # reuse the core + GUI builds
@@ -7,10 +7,7 @@
 # Steps, in order:
 #   1. the core CLI (cmake build/ --target lathe)            -> stage\coredist\lathe.exe + its LGPL libav DLLs + notices
 #   2. the GUI (native/, its own build tree on the pinned vpf and WAVdesk commits) -> stage\lathe-gui.exe
-#   3. makensis native/installer/lathe.nsi                   -> native\build-release\Lathe_<ver>_x64-setup.exe
-#   4. a copy into gui\src-tauri\target\release\bundle\nsis\, where WAVdesk's build-release-native.ps1 picks up Lathe's
-#      installer for its companion offer (the newest Lathe*-setup.exe there)
-#   5. Vacant Systems Manager's package                      -> native\build-release\manager\Lathe-<ver>-win-x64.zip
+#   3. Vacant Systems Manager's package                      -> native\build-release\manager\Lathe-<ver>-win-x64.zip
 #      (the installed folder, zipped; the program sets itself up: lathe-gui --setup, native/app/setup_cli.h)
 #
 # The GUI builds in native\build-release with no FETCHCONTENT_SOURCE_DIR_* overrides: a release is the pinned commits
@@ -19,7 +16,6 @@
 
 param(
     [string]$Configuration = 'Release',
-    [string]$Makensis      = '',
     [switch]$Clean,
     [switch]$SkipCpp
 )
@@ -33,11 +29,10 @@ $out      = Join-Path $native 'build-release'
 $guiBuild = Join-Path $out 'build'
 $stage    = Join-Path $out 'stage'
 $coredist = Join-Path $stage 'coredist'
-$icon     = Join-Path $repo 'gui\src-tauri\icons\icon.ico'
 $script:LogPath = Join-Path $out 'last-release-build.log'
 
 # the version: tauri.conf.json's, Lathe's one source (cmake/lathe_version.cmake: the CLI's --version, the GUI's
-# VERSIONINFO and About; here the installer and the manager's zip). Every built piece is checked against it below.
+# VERSIONINFO and About; here the manager's zip). Every built piece is checked against it below.
 $version = (Get-Content (Join-Path $repo 'gui\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json).version
 
 # a built piece that says another version fails the release (a bump that missed a place, a stale build tree)
@@ -50,7 +45,7 @@ if ($Clean -and (Test-Path $out)) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 Set-Content -Path $script:LogPath -Value "build-release-native $version $(Get-Date -Format s)"
 
-function Step($n, $msg) { Write-Host "`n[$n/5] $msg" -ForegroundColor Cyan }
+function Step($n, $msg) { Write-Host "`n[$n/3] $msg" -ForegroundColor Cyan }
 
 # cmake and friends write warnings to stderr; under EAP Stop one stderr line would abort a good build, so the exit code
 # is the only failure signal
@@ -105,33 +100,11 @@ Assert-Version ((Get-Item (Join-Path $stage 'lathe-gui.exe')).VersionInfo.Produc
 if ($LASTEXITCODE -ne 0) { throw "version mismatch in the Tauri manifests: run tools\bump-version.ps1 -Check" }
 Write-Host "  version ${version}: package.json, Cargo.toml, Cargo.lock"
 
-# ---- 3: the installer ----
-Step 3 "makensis"
-if (-not $Makensis) {
-    $cands = @((Get-Command makensis -EA SilentlyContinue).Source,
-               "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
-               "$env:ProgramFiles\NSIS\makensis.exe",
-               "$env:LOCALAPPDATA\tauri\NSIS\makensis.exe") | Where-Object { $_ -and (Test-Path $_) }
-    $Makensis = $cands | Select-Object -First 1
-}
-if (-not $Makensis) { throw "makensis not found: install NSIS 3 (nsis.sourceforge.io) or pass -Makensis <path>." }
-$setup = Join-Path $out "Lathe_${version}_x64-setup.exe"
-Invoke-Native { & $Makensis /V2 "/DVERSION=$version" "/DSTAGE=$stage" "/DOUTFILE=$setup" "/DICON=$icon" (Join-Path $native 'installer\lathe.nsi') } "makensis"
-Assert-Version (Get-Item $setup).VersionInfo.ProductVersion 'the installer ProductVersion'
-
-# ---- 4: where WAVdesk's release looks for it ----
-Step 4 "copy for WAVdesk's companion offer"
-$compat = Join-Path $repo 'gui\src-tauri\target\release\bundle\nsis'
-New-Item -ItemType Directory -Force -Path $compat | Out-Null
-Copy-Item $setup $compat -Force
-(Get-Item (Join-Path $compat (Split-Path -Leaf $setup))).LastWriteTime = Get-Date   # (WAVdesk takes the newest)
-Write-Host "  -> $compat"
-
-# ---- 5: Vacant Systems Manager's package ----
-# vacant-labs apps/manager/docs/app-contract.md: the installed folder (the stage: no uninstall.exe, NSIS writes that at
-# install) under one top folder "Lathe", zipped by Windows' bsdtar (forward slashes). Reproducible: every file stamped
-# with HEAD's commit time, the entries in the folder's (NTFS: sorted) order. The program does its own setup (--setup).
-Step 5 "the manager's zip"
+# ---- 3: Vacant Systems Manager's package ----
+# vacant-labs apps/manager/docs/app-contract.md: the installed folder (the stage) under one top folder "Lathe", zipped
+# by Windows' bsdtar (forward slashes). Reproducible: every file stamped with HEAD's commit time, the entries in the
+# folder's (NTFS: sorted) order. The program does its own setup (--setup).
+Step 3 "the manager's zip"
 $mgr  = Join-Path $out 'manager'
 $pack = Join-Path $mgr 'pack'
 $item = Join-Path $pack 'Lathe'
@@ -149,7 +122,5 @@ Invoke-Native { & $tar -a -cf $zip -C $pack 'Lathe' } "tar (the manager's zip)"
 Remove-Item -Recurse -Force $pack
 Write-Host "  -> $zip"
 
-Write-Host "`nInstaller ready:" -ForegroundColor Green
-Write-Host "  $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB)"
-Write-Host "Manager package:" -ForegroundColor Green
+Write-Host "`nRelease ready (the manager's package):" -ForegroundColor Green
 Write-Host "  $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"

@@ -8,6 +8,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-20
+
+- Windows releases are Vacant Systems Manager zips only: native/installer/lathe.nsi and the companion copy for WAVdesk's installer are retired (the manager installs Lathe; `lathe-gui --setup` does the rest under the installer's keys, so its installs update in place).
+
 ## 2026-11-16
 
 - The Mac icon (gui/src-tauri/icons/icon.icns) sits on Apple's icon grid: an 824 px rounded tile in the 1024 px canvas, as the manager's and Etch's, so the suite's icons are one size in the Dock (it filled the whole canvas and looked larger than theirs). Windows' icon is unchanged.

@@ -4,8 +4,8 @@
 #   & .\tools\bump-version.ps1 -Check         # only report: every place agrees with tauri.conf.json (exit 1 if not)
 #
 # The source is gui/src-tauri/tauri.conf.json's "version": the core CLI (lathe --version) and the native GUI (its
-# VERSIONINFO, About) read it at configure time (cmake/lathe_version.cmake), the release scripts pass it to the NSIS
-# installer and name the manager's zip with it, and Vacant Systems Manager's pack checks the zip against it. The Tauri
+# VERSIONINFO, About) read it at configure time (cmake/lathe_version.cmake), the release script names the manager's zip
+# with it, and Vacant Systems Manager's pack checks the zip against it. The Tauri
 # GUI's own manifests (gui/package.json, gui/src-tauri/Cargo.toml and Cargo.lock's lathe-gui entry) are kept in step
 # here. build-release-native.ps1 runs the same check on what it built and fails on any disagreement.
 

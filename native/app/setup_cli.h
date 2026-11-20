@@ -1,5 +1,5 @@
 // Vacant Systems Manager's app contract (vacant-labs apps/manager/docs/app-contract.md), Lathe's half: the manager
-// installs Lathe from a zip and the app sets itself up, as the NSIS installer's Install / Uninstall sections do.
+// installs Lathe from a zip and the app sets itself up (the only setup since the NSIS installer was retired, 2026-11-20).
 //
 //   lathe-gui --setup [--test-root <dir>]                          Explorer's Convert with Lathe verbs, the shortcuts,
 //                                                                  HKLM vacantsystems\Lathe, Shared/registry.json's
@@ -15,7 +15,7 @@
 // same paths, no HKLM, no ie4uinit; native/tests/setup/check_setup.py: nothing outside the test root changes). Exit 0
 // done, 1 failed (why on stderr), 2 an argument it does not know. Run from main (main.cpp latheDef, vpf's first call into
 // the app), never from a static initializer: before the window, the one-copy hand-off stands aside for it.
-// Keep it in step with native/installer/lathe.nsi: the same keys, values and verbs.
+// Its keys, values and verbs are the retired installer's, so a copy that installer put in place is set up again in place.
 #pragma once
 #include <string>
 #include <vector>

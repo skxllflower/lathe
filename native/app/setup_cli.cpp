@@ -1,4 +1,4 @@
-// --setup / --uninstall (setup_cli.h): lathe.nsi's Install and Uninstall sections, done by the app for the manager.
+// --setup / --uninstall (setup_cli.h): the app's own setup for the manager (the retired lathe.nsi's keys and verbs).
 #include "setup_cli.h"
 #include "data_root.h"
 
@@ -29,7 +29,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// (lathe.nsi's defines. Every name a compile-time constant, never a std::wstring global: WAVdesk once ran its setup from
+// (the retired installer's names. Every name a compile-time constant, never a std::wstring global: WAVdesk once ran its setup from
 // a static initializer before its string key globals were built, and the empty keys opened the HKLM root itself)
 const wchar_t kProduct[] = L"Lathe";
 const wchar_t kPublisher[] = L"Vacant Systems";
