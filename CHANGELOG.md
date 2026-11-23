@@ -8,6 +8,10 @@ non-obvious why. The commit body is the detail; this file is the skim layer.
 Short hashes are optional and get backfilled; never block a commit on one. Merge commits are
 folded into the change they landed rather than given their own entry.
 
+## 2026-11-22
+
+- Pinned to WAVdesk main 7633b6e7 and vacant-labs main fd172512: the shared windows pick up typing Space in text fields (TextField handled it nowhere, so popup name fields dropped spaces) and the latest WAVdesk shell fixes.
+
 ## 2026-11-20
 
 - Windows releases are Vacant Systems Manager zips only: native/installer/lathe.nsi and the companion copy for WAVdesk's installer are retired (the manager installs Lathe; `lathe-gui --setup` does the rest under the installer's keys, so its installs update in place).
