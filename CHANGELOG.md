@@ -10,6 +10,7 @@ folded into the change they landed rather than given their own entry.
 
 ## 2026-11-22
 
+- Version 0.1.12: built on WAVdesk main 7633b6e7 (the 0.3.13 code: the status bar at every width, prompts keep their spaces, Etch's S9 names in the chop) and vacant-labs main fd172512 (Etch's warp fixes, XTC look, middle-drag zoom; vpf's TextField Space). No Lathe changes of its own beyond the retired Windows installer.
 - Pinned to WAVdesk main 7633b6e7 and vacant-labs main fd172512: the shared windows pick up typing Space in text fields (TextField handled it nowhere, so popup name fields dropped spaces) and the latest WAVdesk shell fixes.
 
 ## 2026-11-20
